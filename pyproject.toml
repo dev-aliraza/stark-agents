@@ -1,0 +1,68 @@
+[project]
+name = "stark-agents"
+version = "0.0.1"
+description = "An SDK to build AI agents"
+dynamic = ["readme"]
+license = "Apache-2.0"
+authors = [{name = "Ali Raza", email = "dev.aliraza@gmail.com"}]
+keywords = ["agent", "ai agent", "asynchronous", "framework", "AI", "tasks"]
+dependencies = [
+    "litellm==1.80.11",
+    "mcp==1.25.0",
+]
+requires-python = ">=3.10"
+classifiers = [
+  "Typing :: Typed",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: OS Independent",
+  "Operating System :: POSIX",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "License :: OSI Approved :: Apache Software License"
+]
+
+[project.urls]
+Homepage = "https://github.com/dev-aliraza/stark-agents"
+Repository = "https://github.com/dev-aliraza/stark-agents"
+Issues = "https://github.com/dev-aliraza/stark-agents/issues"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[build-system]
+requires = ["hatchling==1.26.3", "hatch-fancy-pypi-readme"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+  "src/*"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stark"]
+
+[tool.hatch.build.targets.sdist]
+# Basically everything except hidden files/directories (such as .github, .devcontainers, .python-version, etc)
+include = [
+  "/*.toml",
+  "/*.json",
+  "/*.lock",
+  "/*.md",
+  "/mypy.ini",
+  "/noxfile.py",
+  "bin/*",
+  "examples/*",
+  "src/*",
+  "tests/*",
+]
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
