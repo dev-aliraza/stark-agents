@@ -6,7 +6,7 @@ class Agent():
         name: str,
         instructions: str,
         model: str,
-        mcp_servers: Optional[List[Dict[str, Any]]] = [],
+        mcp_servers: Optional[Dict[str, Any]] = [],
         function_tools: Optional[List[Callable]] = [],
         parallel_tool_calls: Optional[bool] = None,
         llm_provider: Optional[str] = LITELLM,
@@ -31,7 +31,7 @@ class Agent():
     def get_model(self) -> str:
         return self.model
     
-    def get_mcp_servers(self) -> Optional[List[Dict[str, Any]]]:
+    def get_mcp_servers(self) -> Optional[Dict[str, Any]]:
         return self.mcp_servers
     
     def get_function_tools(self) -> Optional[List[Callable]]:
