@@ -68,6 +68,10 @@ class Runner():
         self.mcp_manager = None
         self.ft_manager = None
         self.tools = []
+
+    async def __close_mcp_manager(self):
+        if self.mcp_manager: 
+            await self.mcp_manager.close_all_sessions()
     
     async def __init_tools(self):
         mcp_servers = self.agent.get_mcp_servers()
@@ -178,6 +182,7 @@ class Runner():
                 logging.info(f"No tool calls made. Agent finished after {run_response.iterations} iterations.")
                 # Yield agent finished event
                 yield RunnerStream.iteration_end(iteration_data)
+                await self.__close_mcp_manager()
                 yield RunnerStream.agent_run_end(run_response)
                 return
 
@@ -196,6 +201,7 @@ class Runner():
             yield RunnerStream.iteration_end(iteration_data)
 
         # Yield agent finished event if max iterations reached
+        await self.__close_mcp_manager()
         run_response.max_iterations_reached = True
         yield RunnerStream.agent_run_end(run_response)
 
@@ -204,11 +210,8 @@ class Runner():
             await self.__init_tools()
             async for event in self.__stream_with_events(input):
                 yield event
-            if self.mcp_manager: 
-                await self.mcp_manager.close_all_sessions()
         except Exception as e:
-            if self.mcp_manager:
-                await self.mcp_manager.close_all_sessions()
+            await self.__close_mcp_manager()
             raise
 
     def __parse_model_response(self, response) -> Dict:
@@ -277,20 +280,18 @@ class Runner():
         run_response.max_iterations_reached = True
         return run_response
 
-    async def __run_async(self, input: List[Dict[str, Any]]):
+    async def run_async(self, input: List[Dict[str, Any]]):
         try:
             await self.__init_tools()
             exec_result = await self.__execute(input)
-            if self.mcp_manager: 
-                await self.mcp_manager.close_all_sessions()
+            await self.__close_mcp_manager()
             return exec_result
         except Exception as e:
-            if self.mcp_manager:
-                await self.mcp_manager.close_all_sessions()
+            await self.__close_mcp_manager()
             raise
 
     def run(self, input: List[Dict[str, Any]] = [{}]):
         try:
-            return asyncio.run(self.__run_async(input))
+            return asyncio.run(self.run_async(input))
         except Exception as e:
             raise

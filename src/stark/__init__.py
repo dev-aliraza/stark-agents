@@ -1,5 +1,5 @@
 from .agent import Agent
-from .runner import Runner
+from .runner import Runner, RunnerStream
 from .tool import Tool
 from .model import Model
 from .mcp import MCPManager
@@ -12,6 +12,7 @@ from .type import (
 __all__ = [
     "Agent",
     "Runner",
+    "RunnerStream",
     "Tool",
     "Model",
     "MCPManager",
