@@ -1,10 +1,8 @@
-import logging, json, asyncio
+import logging, json, asyncio, sys
 from typing import List, Dict, Any
 from .agent import Agent
 from .model import Model
 from .tool import Tool
-from .mcp import MCPManager
-from .function import FunctionToolManager
 from .type import (
     ModelSreamResponse, RunResponse, StreamEvent, ToolCallResponse, IterationData
 )
@@ -67,28 +65,18 @@ class Runner():
         self.agent = agent
         self.mcp_manager = None
         self.ft_manager = None
-        self.tools = []
-
-    async def __close_mcp_manager(self):
-        if self.mcp_manager: 
-            await self.mcp_manager.close_all_sessions()
+        self.tool = None
+        self.is_sub_agent = False
     
-    async def __init_tools(self):
-        mcp_servers = self.agent.get_mcp_servers()
-        function_tools = self.agent.get_function_tools()
-        if mcp_servers:
-            self.mcp_manager = await MCPManager.init(mcp_servers)
-            self.tools = self.tools + self.mcp_manager.get_tools()
-        if function_tools:
-            self.ft_manager = FunctionToolManager(function_tools)
-            self.tools = self.tools + self.ft_manager.get_tools()
-    
-    def __set_agent_instructions(self, messages, system_prompt):
-        if system_prompt:
-            if not messages or messages[0].get("role") != "system":
-                messages.insert(0, {"role": "system", "content": system_prompt})
-            else:
-                messages[0]["content"] = system_prompt
+    def __set_agent_instructions(self, messages: List, system_prompt):
+        if not system_prompt:
+            return messages
+        
+        system_prompt_msg = {"role": "system", "content": system_prompt}
+        if not messages or (len(messages) == 1 and messages[0].get("role") != "system"):
+            messages.insert(0, system_prompt_msg)
+        else:
+            messages.append(system_prompt_msg)
         return messages
 
     async def __get_model_stream(self, response):
@@ -150,7 +138,7 @@ class Runner():
             response = await Model(self.agent.get_llm_provider()).run_async(
                 model=self.agent.get_model(),
                 messages=run_response.result,
-                tools=self.tools,
+                tools=self.tool.get_tools(),
                 stream=True,
                 parallel_tool_calls = self.agent.get_parallel_tool_calls(),
                 custom_llm_provider=self.agent.get_custom_llm_provider(),
@@ -182,15 +170,14 @@ class Runner():
                 logging.info(f"No tool calls made. Agent finished after {run_response.iterations} iterations.")
                 # Yield agent finished event
                 yield RunnerStream.iteration_end(iteration_data)
-                await self.__close_mcp_manager()
+                await self.tool.close_mcp_manager()
+                run_response.sub_agents_response = self.tool.get_sub_agents_response()
                 yield RunnerStream.agent_run_end(run_response)
                 return
 
-            tool_responses: List[ToolCallResponse] = await Tool(
-                stream_response.tool_calls,
-                self.mcp_manager,
-                self.ft_manager
-            ).tool_calls()
+            tool_responses: List[ToolCallResponse] = await self.tool.tool_calls(
+                stream_response.tool_calls, run_response.result
+            )
 
             for tool_response in tool_responses:
                 run_response.result.append(tool_response.model_dump())
@@ -201,17 +188,19 @@ class Runner():
             yield RunnerStream.iteration_end(iteration_data)
 
         # Yield agent finished event if max iterations reached
-        await self.__close_mcp_manager()
+        await self.tool.close_mcp_manager()
+        run_response.sub_agents_response = self.tool.get_sub_agents_response()
         run_response.max_iterations_reached = True
         yield RunnerStream.agent_run_end(run_response)
 
     async def run_stream(self, input: List[Dict[str, Any]] = [{}]):
         try:
-            await self.__init_tools()
+            self.tool = await Tool(self).init_tools(self.agent)
             async for event in self.__stream_with_events(input):
                 yield event
         except Exception as e:
-            await self.__close_mcp_manager()
+            if self.tool:
+                await self.tool.close_mcp_manager()
             raise
 
     def __parse_model_response(self, response) -> Dict:
@@ -248,14 +237,16 @@ class Runner():
     async def __execute(self, input: List[Dict[str, Any]]):
         input = self.__set_agent_instructions(input, self.agent.get_instructions())
         run_response = RunResponse(result=input, iterations=0)
+        # If sub agent, get the last index value of the input. It will be the system prompt in any way.
+        if self.is_sub_agent and self.agent.get_instructions():
+            run_response.sub_agent_result.append(input[-1])
 
         while run_response.iterations < self.agent.get_max_iterations():
             run_response.iterations += 1
             response = Model(self.agent.get_llm_provider()).run(
                 model=self.agent.get_model(),
                 messages=run_response.result,
-                tools=self.tools,
-                stream=True,
+                tools=self.tool.get_tools(),
                 parallel_tool_calls = self.agent.get_parallel_tool_calls(),
                 custom_llm_provider=self.agent.get_custom_llm_provider(),
                 trace_id=self.agent.get_trace_id()
@@ -265,29 +256,36 @@ class Runner():
             
             run_response.result.append(response)
 
+            if self.is_sub_agent:
+                run_response.sub_agent_result.append(response)
+
             if not response.get("tool_calls", []):
+                run_response.sub_agents_response = self.tool.get_sub_agents_response()
                 return run_response
 
-            tool_responses: List[ToolCallResponse] = await Tool(
-                response.get("tool_calls"),
-                self.mcp_manager,
-                self.ft_manager
-            ).tool_calls()
+            tool_responses: List[ToolCallResponse] = await self.tool.tool_calls(
+                response.get("tool_calls"), run_response.result
+            )
 
             for tool_response in tool_responses:
                 run_response.result.append(tool_response.model_dump())
 
+        run_response.sub_agents_response = self.tool.get_sub_agents_response()
         run_response.max_iterations_reached = True
         return run_response
 
     async def run_async(self, input: List[Dict[str, Any]]):
         try:
-            await self.__init_tools()
+            # If caller function is 'run_sub_agent', its a sub agent call
+            if (sys._getframe(1).f_code.co_name) == 'run_sub_agent':
+                self.is_sub_agent = True
+            self.tool = await Tool(self).init_tools(self.agent)
             exec_result = await self.__execute(input)
-            await self.__close_mcp_manager()
+            await self.tool.close_mcp_manager()
             return exec_result
         except Exception as e:
-            await self.__close_mcp_manager()
+            if self.tool:
+                await self.tool.close_mcp_manager()
             raise
 
     def run(self, input: List[Dict[str, Any]] = [{}]):
@@ -295,3 +293,7 @@ class Runner():
             return asyncio.run(self.run_async(input))
         except Exception as e:
             raise
+
+    @classmethod
+    async def run_sub_agent(cls, agent: Agent, input=[{}]):
+        return await cls(agent).run_async(input=input)

@@ -1,27 +1,58 @@
 import logging, json
-from typing import Any, List, Dict
+from typing import List, Dict, Any
 from .mcp import MCPManager
 from .function import FunctionToolManager
-from .type import ToolCallResponse
+from .agent import Agent, SubAgentManager
+from .type import ToolCallResponse, RunResponse
 
 class Tool:
-    def __init__(self, 
-        ai_tool_calls: List[Dict[str, Any]],
-        mcp_manager: MCPManager,
-        ft_manager: FunctionToolManager
-    ):
-        self.ai_tool_calls = ai_tool_calls
-        self.mcp_manager = mcp_manager
-        self.ft_manager = ft_manager
+    def __init__(self, runner):
+        self.runner = runner
+        self.mcp_manager = None
+        self.ft_manager = None
+        self.sub_agent_manager = None
+        self.tools = []
+        self.sub_agents_response = {}
+
+    async def init_tools(self, agent: Agent):
+        mcp_servers = agent.get_mcp_servers()
+        function_tools = agent.get_function_tools()
+        sub_agents = agent.get_sub_agents()
+        if mcp_servers:
+            self.mcp_manager = await MCPManager.init(mcp_servers)
+            self.tools = self.tools + self.mcp_manager.get_tools()
+        if function_tools:
+            self.ft_manager = FunctionToolManager(function_tools)
+            self.tools = self.tools + self.ft_manager.get_tools()
+        if sub_agents:
+            self.sub_agent_manager = SubAgentManager(sub_agents)
+            self.tools = self.tools + self.sub_agent_manager.get_agents_as_tools()
+        return self
+
+    def get_tools(self) -> List[Dict]:
+        return self.tools
+
+    async def close_mcp_manager(self):
+        if self.mcp_manager:
+            await self.mcp_manager.close_all_sessions()
     
-    async def tool_calls(self) -> List[ToolCallResponse]:
+    def get_sub_agents_response(self) -> Dict:
+        return self.sub_agents_response
+    
+    async def tool_calls(
+        self, ai_tool_calls,
+        messages: List[Dict[str, Any]] = [{}]
+    ) -> List[ToolCallResponse]:
         tool_responses: List[ToolCallResponse] = []
-        for ai_tool_call in self.ai_tool_calls:
-            tool_responses.append(await self.__call(ai_tool_call))
+        for ai_tool_call in ai_tool_calls:
+            tool_responses.append(await self.__call(ai_tool_call, messages))
         return tool_responses
 
-    async def __call(self, ai_tool_call: Dict) -> ToolCallResponse:
-        tool_name = ai_tool_call["function"]["name"]
+    async def __call(
+        self, ai_tool_call: Dict,
+        messages: List[Dict[str, Any]] = [{}]
+    ) -> ToolCallResponse:
+        tool_name: str = ai_tool_call["function"]["name"]
         tool_call_id = ai_tool_call["id"]
         tool_result = None
 
@@ -43,8 +74,6 @@ class Tool:
             try:
                 tool_error = None
                 result = await self.mcp_manager.call_tool(tool_name, arguments)
-
-                logging.info(result)
 
                 if result.content:
                     if hasattr(result.content[0], "text"):
@@ -91,6 +120,13 @@ class Tool:
 
         if self.ft_manager and self.ft_manager.is_function_tool(tool_name):
             tool_result = self.ft_manager.call_tool(tool_name, arguments)
+            if not isinstance(tool_result, str):
+                tool_result = str(tool_result)
+
+        if self.sub_agent_manager and self.sub_agent_manager.is_agent(tool_name):
+            tool_result: RunResponse = await self.sub_agent_manager.execute(self.runner, tool_name, messages)
+            tool_result = tool_result.sub_agent_result
+            self.sub_agents_response.update({tool_name.removeprefix("sub_agent__"): tool_result[-1]})
             logging.info(tool_result)
             if not isinstance(tool_result, str):
                 tool_result = str(tool_result)

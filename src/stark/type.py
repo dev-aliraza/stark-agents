@@ -10,6 +10,8 @@ class ModelSreamResponse(BaseModel):
 class RunResponse(BaseModel):
     result: List[Dict[str, Any]]
     iterations: int
+    sub_agent_result: List[Dict[str, Any]] = []
+    sub_agents_response: Dict[str, Any] = {}
     max_iterations_reached: bool = False
 
 class IterationData(BaseModel):
