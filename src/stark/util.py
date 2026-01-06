@@ -1,6 +1,7 @@
 import json, re
 
 class Util:
+    
     @classmethod
     def load_json(cls, json_string):
         # Cleaning Json String if there are back ticks or `json` keyword
