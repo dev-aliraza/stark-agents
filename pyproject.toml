@@ -1,6 +1,6 @@
 [project]
 name = "stark-agents"
-version = "0.0.2"
+version = "0.0.3"
 description = "An SDK to build AI agents"
 dynamic = ["readme"]
 license = "Apache-2.0"
