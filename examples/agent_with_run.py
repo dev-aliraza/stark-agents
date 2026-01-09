@@ -1,7 +1,5 @@
 import os, json
-from stark.agent import Agent
-from stark.runner import Runner
-from stark.llms import LITELLM
+from stark import Agent, Runner
 
 MCP_SERVER = {
     "atlassian": {
@@ -86,8 +84,7 @@ You are an expert Assistant. Your role is to manage Jira Tickets and search star
             instructions=instructions,
             model="claude-sonnet-4-5",
             mcp_servers=MCP_SERVER,
-            function_tools=[stark_search],
-            llm_provider=LITELLM
+            function_tools=[stark_search]
         )
 
         result = Runner(agent).run(input=[{ "role": "user", "content": user_query }])

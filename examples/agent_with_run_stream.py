@@ -1,5 +1,5 @@
 import os, asyncio, json
-from stark import Agent, Runner, RunnerStream, StreamEvent
+from stark import Agent, Runner, RunnerStream, Stream
 
 MCP_SERVER = {
     "atlassian": {
@@ -94,22 +94,22 @@ You are an expert Assistant. Your role is to manage Jira Tickets and search star
         async for event in result:
             
             # Handle different event types
-            if event.type == StreamEvent.ITER_START:
+            if event.type == Stream.ITER_START:
                 print(f"ITER_START: {RunnerStream.data_dump(event)}")
 
-            elif event.type == StreamEvent.CONTENT_CHUNK:
+            elif event.type == Stream.CONTENT_CHUNK:
                 print(f"CONTENT_CHUNK: {RunnerStream.data_dump(event)}")
 
-            elif event.type == StreamEvent.TOOL_CALLS:
+            elif event.type == Stream.TOOL_CALLS:
                 print(f"TOOL_CALLS: {RunnerStream.data_dump(event)}")
 
-            elif event.type == StreamEvent.TOOL_RESPONSE:
+            elif event.type == Stream.TOOL_RESPONSE:
                 print(f"TOOL_RESPONSE: {RunnerStream.data_dump(event)}")
 
-            elif event.type == StreamEvent.ITER_END:
+            elif event.type == Stream.ITER_END:
                 print(f"ITER_END: {RunnerStream.data_dump(event)}")
 
-            elif event.type == StreamEvent.AGENT_RUN_END:
+            elif event.type == Stream.AGENT_RUN_END:
                 print(f"AGENT_RUN_END: {RunnerStream.data_dump(event)}")
                 if event.data.max_iterations_reached:
                     print("Warning: Max iterations reached!")
