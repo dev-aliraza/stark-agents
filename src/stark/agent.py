@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional, Callable
-from .llm_providers import LITELLM
+from .llm_providers import OPENAI
 
 class Agent():
     def __init__(self,
@@ -11,7 +11,7 @@ class Agent():
         function_tools: Optional[List[Callable]] = [],
         sub_agents: Optional[List['Agent']] = [],
         parallel_tool_calls: Optional[bool] = None,
-        llm_provider: Optional[str] = LITELLM,
+        llm_provider: Optional[str] = OPENAI,
         max_iterations: Optional[int] = 10,
         trace_id: Optional[str] = None
     ):

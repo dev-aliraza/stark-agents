@@ -2,9 +2,8 @@ from abc import ABC, abstractmethod
 from typing import List, AsyncIterator
 from ..type import Stream, ProviderResponse
 
-LITELLM = "litellm"
 OPENAI = "openai"
-ANTROPIC = "antropic"
+ANTHROPIC = "anthropic"
 
 class ProviderSream:
     

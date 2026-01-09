@@ -4,60 +4,55 @@ from .provider import LLMProvider, ProviderSream
 from ..type import ProviderResponse, Stream
 
 class LiteLLM(LLMProvider):
-    def __init__(self):
-        self.base_url = os.environ.get("LITELLM_BASE_URL", "")
-        self.api_key = os.environ.get("LITELLM_API_KEY", "")
+    def __init__(self, provider):
+        self.api_base = os.environ.get("LITELLM_BASE_URL", None)
+        self.api_key = os.environ.get("LITELLM_API_KEY", None)
+        self.provider = provider
 
     def run(self, model: str, messages: List=[], tools: List=[], **kwargs):
         metadata: Dict[str, Any] = {}
-        custom_llm_provider = kwargs.get("custom_llm_provider", "openai")
         metadata["trace_id"] = kwargs.get("trace_id", None)
         parallel_tool_calls = kwargs.get("parallel_tool_calls", None)
 
         return litellm.completion(
-            model=model,
+            model=(self.provider + "/" + model),
             messages=messages,
             tools=tools,
             parallel_tool_calls=parallel_tool_calls,
-            api_base=self.base_url,
+            api_base=self.api_base,
             api_key=self.api_key,
-            custom_llm_provider=custom_llm_provider,
             metadata=metadata
         )
     
     async def run_async(self, model: str, messages: List=[], tools: List=[], **kwargs):
         metadata: Dict[str, Any] = {}
-        custom_llm_provider = kwargs.get("custom_llm_provider", "openai")
         metadata["trace_id"] = kwargs.get("trace_id", None)
         parallel_tool_calls = kwargs.get("parallel_tool_calls", None)
 
         return await litellm.acompletion(
-            model=model,
+            model=(self.provider + "/" + model),
             messages=messages,
             tools=tools,
             stream=False,
             parallel_tool_calls=parallel_tool_calls,
-            api_base=self.base_url,
+            api_base=self.api_base,
             api_key=self.api_key,
-            custom_llm_provider=custom_llm_provider,
             metadata=metadata
         )
 
     async def run_stream(self, model: str, messages: List=[], tools: List=[], **kwargs):
         metadata: Dict[str, Any] = {}
-        custom_llm_provider = kwargs.get("custom_llm_provider", "openai")
         metadata["trace_id"] = kwargs.get("trace_id", None)
         parallel_tool_calls = kwargs.get("parallel_tool_calls", None)
 
         return await litellm.acompletion(
-            model=model,
+            model=(self.provider + "/" + model),
             messages=messages,
             tools=tools,
             stream=True,
             parallel_tool_calls=parallel_tool_calls,
-            api_base=self.base_url,
+            api_base=self.api_base,
             api_key=self.api_key,
-            custom_llm_provider=custom_llm_provider,
             metadata=metadata
         )
     

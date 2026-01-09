@@ -1,9 +1,9 @@
 from .provider import (
-    LITELLM, OPENAI, ANTROPIC
+    OPENAI, ANTHROPIC
 )
 
 __all__ = [
     "LITELLM",
     "OPENAI",
-    "ANTROPIC"
+    "ANTHROPIC"
 ]
