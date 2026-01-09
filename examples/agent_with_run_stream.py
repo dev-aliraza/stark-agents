@@ -1,7 +1,5 @@
 import os, asyncio, json
-from stark.agent import Agent
-from stark.runner import Runner, RunnerStream
-from stark.llms import LITELLM
+from stark import Agent, Runner, RunnerStream, StreamEvent
 
 MCP_SERVER = {
     "atlassian": {
@@ -86,8 +84,7 @@ You are an expert Assistant. Your role is to manage Jira Tickets and search star
             instructions=instructions,
             model="claude-sonnet-4-5",
             mcp_servers=MCP_SERVER,
-            function_tools=[stark_search],
-            llm_provider=LITELLM
+            function_tools=[stark_search]
         )
 
         result = Runner(agent).run_stream(input=[{ "role": "user", "content": user_query }])
@@ -97,22 +94,22 @@ You are an expert Assistant. Your role is to manage Jira Tickets and search star
         async for event in result:
             
             # Handle different event types
-            if event.type == RunnerStream.ITER_START:
+            if event.type == StreamEvent.ITER_START:
                 print(f"ITER_START: {RunnerStream.data_dump(event)}")
 
-            elif event.type == RunnerStream.CONTENT_CHUNK:
+            elif event.type == StreamEvent.CONTENT_CHUNK:
                 print(f"CONTENT_CHUNK: {RunnerStream.data_dump(event)}")
 
-            elif event.type == RunnerStream.TOOL_CALLS:
+            elif event.type == StreamEvent.TOOL_CALLS:
                 print(f"TOOL_CALLS: {RunnerStream.data_dump(event)}")
 
-            elif event.type == RunnerStream.TOOL_RESPONSE:
+            elif event.type == StreamEvent.TOOL_RESPONSE:
                 print(f"TOOL_RESPONSE: {RunnerStream.data_dump(event)}")
 
-            elif event.type == RunnerStream.ITER_END:
+            elif event.type == StreamEvent.ITER_END:
                 print(f"ITER_END: {RunnerStream.data_dump(event)}")
 
-            elif event.type == RunnerStream.AGENT_RUN_END:
+            elif event.type == StreamEvent.AGENT_RUN_END:
                 print(f"AGENT_RUN_END: {RunnerStream.data_dump(event)}")
                 if event.data.max_iterations_reached:
                     print("Warning: Max iterations reached!")

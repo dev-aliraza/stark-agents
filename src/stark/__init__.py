@@ -1,7 +1,7 @@
 from .agent import Agent
 from .runner import Runner, RunnerStream
 from .type import (
-    RunResponse, StreamEvent, IterationData, ToolCallResponse
+    RunResponse, Stream, IterationData, ToolCallResponse
 )
 from .util import Util
 
@@ -10,7 +10,7 @@ __all__ = [
     "Runner",
     "RunnerStream",
     "RunResponse",
-    "StreamEvent",
+    "Stream",
     "IterationData",
     "ToolCallResponse",
     "Util"

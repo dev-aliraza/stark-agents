@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional, Callable
-from .llms.provider import LITELLM
+from .llm_providers import LITELLM
 
 class Agent():
     def __init__(self,
@@ -13,7 +13,6 @@ class Agent():
         parallel_tool_calls: Optional[bool] = None,
         llm_provider: Optional[str] = LITELLM,
         max_iterations: Optional[int] = 10,
-        custom_llm_provider: Optional[str] = "openai",
         trace_id: Optional[str] = None
     ):
         self.name = name
@@ -26,7 +25,6 @@ class Agent():
         self.parallel_tool_calls = parallel_tool_calls
         self.llm_provider = llm_provider
         self.max_iterations = max_iterations
-        self.custom_llm_provider = custom_llm_provider
         self.trace_id = trace_id
 
     def get_name(self) -> str:
@@ -58,9 +56,6 @@ class Agent():
     
     def get_max_iterations(self) -> Optional[int]:
         return self.max_iterations
-    
-    def get_custom_llm_provider(self) -> Optional[str]:
-        return self.custom_llm_provider
     
     def get_trace_id(self) -> Optional[str]:
         return self.trace_id
