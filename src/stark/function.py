@@ -7,13 +7,6 @@ class FunctionToolManager:
         self.func_name_map = {}
         self.tools = self.__load_tools()
 
-    def __is_valid_json(self, json_str):
-        try:
-            json.loads(json_str)
-            return True
-        except json.decoder.JSONDecodeError:
-            return False
-
     def __is_instance(self, obj):
         # Returns True for instances of user-defined classes
         # Returns False for built-in types (int, list, str, function, etc.) or classes themselves

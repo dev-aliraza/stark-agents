@@ -5,7 +5,7 @@ def main():
     agent_3 = Agent(
         name="Delivery-Agent",
         description="This agent will be used for delivering pizza", # Sub agent must have a description.
-        instructions="Say `pizza has been delivered` in your response and add pizza type and temperature if available",
+        instructions="Delivery Pizza to customer and return response `Your {{ Pizza Type }} Pizza has been delivered`",
         model="gemini-3-pro-preview"
     )
 
@@ -13,13 +13,13 @@ def main():
     agent_2 = Agent(
         name="Pizza-Agent",
         description="This agent will be used for baking pizza", # Sub agent must have a description.
-        instructions="Say 'pizza has been baked at 60 degree' in your response, add pizza type in the response if available and call Delivery Agent",
+        instructions="Bake Pizza at 60 degree and return response `Your {{ Pizza Type }} Pizza is ready`",
         model="gemini-3-pro-preview"
     )
 
     agent_1 = Agent(
         name="Master-Agent",
-        instructions="You have sub_agent tool. Call tools based on user query",
+        instructions="You're the pizza delivery company agent responsible for baking pizza and deliver them to the customer.",
         model="gemini-3-pro-preview",
         sub_agents=[agent_2, agent_3]
     )
@@ -28,8 +28,5 @@ def main():
 
     print(result)
     print("")
-    print(result.sub_agents_response.get("Pizza-Agent"))
-    print("")
-    print(result.sub_agents_response.get("Delivery-Agent"))
 
 main()

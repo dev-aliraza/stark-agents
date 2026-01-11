@@ -216,8 +216,14 @@ class Tool:
 
         if self.sub_agent_manager and self.sub_agent_manager.is_agent(tool_name):
             tool_result: RunResponse = await self.sub_agent_manager.execute(self.runner, tool_name, messages)
-            tool_result = tool_result.sub_agent_result
-            self.sub_agents_response.update({tool_name.removeprefix("sub_agent__"): tool_result[-1]})
+            self.sub_agents_response.update({tool_name.removeprefix("sub_agent__"): tool_result.sub_agent_result})
+            if tool_result.sub_agent_result:
+                tool_result = tool_result.sub_agent_result[-1]
+                if isinstance(tool_result, dict) and "content" in tool_result:
+                    tool_result = tool_result["content"]
+            else:
+                tool_result = "Sub-Agent executed successfully (no output returned)"
+            
             logging.info(tool_result)
             if not isinstance(tool_result, str):
                 tool_result = str(tool_result)
