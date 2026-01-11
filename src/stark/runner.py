@@ -76,6 +76,7 @@ class Runner():
                 messages=run_response.result,
                 tools=self.tool.get_tools(),
                 parallel_tool_calls = self.agent.get_parallel_tool_calls(),
+                max_tokens=self.agent.get_max_output_tokens(),
                 trace_id=self.agent.get_trace_id()
             )
 
@@ -153,6 +154,7 @@ class Runner():
                 messages=run_response.result,
                 tools=self.tool.get_tools(),
                 parallel_tool_calls = self.agent.get_parallel_tool_calls(),
+                max_tokens=self.agent.get_max_output_tokens(),
                 trace_id=self.agent.get_trace_id()
             )
 

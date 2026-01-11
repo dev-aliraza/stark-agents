@@ -9,10 +9,12 @@ class Agent():
         description: str = "",
         mcp_servers: Optional[Dict[str, Any]] = [],
         function_tools: Optional[List[Callable]] = [],
+        enable_web_search: Optional[bool] = False,
         sub_agents: Optional[List['Agent']] = [],
         parallel_tool_calls: Optional[bool] = None,
         llm_provider: Optional[str] = OPENAI,
         max_iterations: Optional[int] = 10,
+        max_output_tokens: Optional[int] = None,
         trace_id: Optional[str] = None
     ):
         self.name = name
@@ -21,10 +23,12 @@ class Agent():
         self.description = description
         self.mcp_servers = mcp_servers
         self.function_tools = function_tools
+        self.enable_web_search = enable_web_search
         self.sub_agents = sub_agents
         self.parallel_tool_calls = parallel_tool_calls
         self.llm_provider = llm_provider
         self.max_iterations = max_iterations
+        self.max_output_tokens = max_output_tokens
         self.trace_id = trace_id
 
     def get_name(self) -> str:
@@ -45,6 +49,9 @@ class Agent():
     def get_function_tools(self) -> Optional[List[Callable]]:
         return self.function_tools
     
+    def get_enable_web_search(self) -> Optional[bool]:
+        return self.enable_web_search
+    
     def get_sub_agents(self) -> Optional[List['Agent']]:
         return self.sub_agents
     
@@ -56,6 +63,9 @@ class Agent():
     
     def get_max_iterations(self) -> Optional[int]:
         return self.max_iterations
+    
+    def get_max_output_tokens(self) -> Optional[int]:
+        return self.max_output_tokens
     
     def get_trace_id(self) -> Optional[str]:
         return self.trace_id

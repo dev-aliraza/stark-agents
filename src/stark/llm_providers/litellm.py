@@ -11,49 +11,49 @@ class LiteLLM(LLMProvider):
 
     def run(self, model: str, messages: List=[], tools: List=[], **kwargs):
         metadata: Dict[str, Any] = {}
-        metadata["trace_id"] = kwargs.get("trace_id", None)
-        parallel_tool_calls = kwargs.get("parallel_tool_calls", None)
+        if "trace_id" in kwargs:
+            metadata["trace_id"] = kwargs.pop("trace_id")
 
         return litellm.completion(
             model=(self.provider + "/" + model),
             messages=messages,
             tools=tools,
-            parallel_tool_calls=parallel_tool_calls,
             api_base=self.api_base,
             api_key=self.api_key,
-            metadata=metadata
+            metadata=metadata,
+            **kwargs
         )
     
     async def run_async(self, model: str, messages: List=[], tools: List=[], **kwargs):
         metadata: Dict[str, Any] = {}
-        metadata["trace_id"] = kwargs.get("trace_id", None)
-        parallel_tool_calls = kwargs.get("parallel_tool_calls", None)
+        if "trace_id" in kwargs:
+            metadata["trace_id"] = kwargs.pop("trace_id")
 
         return await litellm.acompletion(
             model=(self.provider + "/" + model),
             messages=messages,
             tools=tools,
             stream=False,
-            parallel_tool_calls=parallel_tool_calls,
             api_base=self.api_base,
             api_key=self.api_key,
-            metadata=metadata
+            metadata=metadata,
+            **kwargs
         )
 
     async def run_stream(self, model: str, messages: List=[], tools: List=[], **kwargs):
         metadata: Dict[str, Any] = {}
-        metadata["trace_id"] = kwargs.get("trace_id", None)
-        parallel_tool_calls = kwargs.get("parallel_tool_calls", None)
+        if "trace_id" in kwargs:
+            metadata["trace_id"] = kwargs.pop("trace_id")
 
         return await litellm.acompletion(
             model=(self.provider + "/" + model),
             messages=messages,
             tools=tools,
             stream=True,
-            parallel_tool_calls=parallel_tool_calls,
             api_base=self.api_base,
             api_key=self.api_key,
-            metadata=metadata
+            metadata=metadata,
+            **kwargs
         )
     
     def response(self, response) -> ProviderResponse:

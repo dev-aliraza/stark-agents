@@ -1,9 +1,94 @@
-import logging, json
-from typing import List, Dict, Any
+import logging, json, inspect, functools
+from typing import List, Dict, Any, get_type_hints, get_origin, get_args
 from .mcp import MCPManager
 from .function import FunctionToolManager
 from .agent import Agent, SubAgentManager
 from .type import ToolCallResponse, RunResponse
+from .llm_providers import OPENAI, ANTHROPIC
+
+def stark_tool(func):
+    """
+    Decorator to register a function as an MCP tool.
+    Attaches an 'mcp_def' attribute to the function containing the tool definition.
+    """
+    
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    # --- 1. Basic Metadata ---
+    tool_name = func.__name__
+    # Extract description from docstring (default to empty string if None)
+    tool_description = inspect.getdoc(func) or ""
+
+    # --- 2. Type Hint Introspection ---
+    type_hints = get_type_hints(func)
+    sig = inspect.signature(func)
+    
+    properties = {}
+    required_fields = []
+
+    # Helper to map python types to JSON schema types
+    def python_type_to_json_schema(py_type):
+        # Handle basics
+        if py_type == str:
+            return {"type": "string"}
+        elif py_type == int:
+            return {"type": "integer"}
+        elif py_type == float:
+            return {"type": "number"}
+        elif py_type == bool:
+            return {"type": "boolean"}
+        elif py_type == dict:
+            return {"type": "object"}
+        
+        # Handle Lists (e.g., list[str])
+        origin = get_origin(py_type)
+        if origin is list:
+            args = get_args(py_type)
+            item_schema = python_type_to_json_schema(args[0]) if args else {}
+            return {"type": "array", "items": item_schema}
+            
+        # Fallback for complex/unknown types
+        return {"type": "string"}
+
+    # --- 3. Build Properties ---
+    for param_name, param in sig.parameters.items():
+        # Skip 'self' or 'cls' for class methods
+        if param_name in ('self', 'cls'):
+            continue
+            
+        # Get the Python type (default to str if not annotated)
+        param_type = type_hints.get(param_name, str)
+        
+        # Generate schema for this field
+        field_schema = python_type_to_json_schema(param_type)
+        
+        # Add description if parsed (Optional: You could use a docstring parser here)
+        # For this simple example, we don't extract per-param descriptions from docstrings
+        # as that requires complex regex depending on docstring style (Google/NumPy/Sphinx).
+        
+        properties[param_name] = field_schema
+
+        # Determine if required (no default value = required)
+        if param.default is inspect.Parameter.empty:
+            required_fields.append(param_name)
+
+    # --- 4. Construct the MCP Tool Definition ---
+    wrapper.tool_def = {
+        "name": tool_name,
+        "description": tool_description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required_fields
+        }
+    }
+    
+    # helper method to get the JSON easily
+    wrapper.get_json_schema = lambda: json.dumps(wrapper.tool_def, indent=2)
+
+    return wrapper
 
 class Tool:
     def __init__(self, runner):
@@ -18,6 +103,7 @@ class Tool:
         mcp_servers = agent.get_mcp_servers()
         function_tools = agent.get_function_tools()
         sub_agents = agent.get_sub_agents()
+        enable_web_search = agent.get_enable_web_search()
         if mcp_servers:
             self.mcp_manager = await MCPManager.init(mcp_servers)
             self.tools = self.tools + self.mcp_manager.get_tools()
@@ -27,6 +113,11 @@ class Tool:
         if sub_agents:
             self.sub_agent_manager = SubAgentManager(sub_agents)
             self.tools = self.tools + self.sub_agent_manager.get_agents_as_tools()
+        if enable_web_search:
+            if agent.get_llm_provider() == OPENAI:
+                self.tools.append({"type": "web_search_preview"})
+            elif agent.get_llm_provider() == ANTHROPIC:
+                self.tools.append({"type": "web_search_20250305", "name": "web_search", "max_uses": 5})
         return self
 
     def get_tools(self) -> List[Dict]:
