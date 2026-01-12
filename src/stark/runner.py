@@ -1,5 +1,5 @@
 import logging, json, asyncio, sys
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable
 from .agent import Agent
 from .llm import init_llm
 from .llm_providers.provider import LLMProvider
@@ -60,7 +60,12 @@ class Runner():
             messages.append(system_prompt_msg)
         return messages
 
-    async def __execute(self, input: List[Dict[str, Any]], stream = False):
+    async def __execute(
+        self, input: List[Dict[str, Any]],
+        stream: bool = False,
+        input_filter: Callable = None
+    ):
+        # Set system prompt for the model input
         input = self.__set_agent_instructions(input, self.agent.get_instructions())
         run_response = RunResponse(result=input, iterations=0)
         # If sub agent, get the last index value of the input. It will be the system prompt in any way.
@@ -73,8 +78,14 @@ class Runner():
             if stream:
                 yield RunnerStream.iteration_start(run_response.iterations)
 
-            # Reminder: Add input_filter callback/hook here
+            # Filter input before sending input to the LLM call
+            if input_filter:
+                run_response.result = input_filter(run_response.result)
+                if not isinstance(run_response.result, list) or len(run_response.result) < 1:
+                    yield run_response
+                    return
             
+            # Run the LLM
             provider: LLMProvider = init_llm(self.agent.get_llm_provider())
             llm_response = await provider.run_async(
                 model=self.agent.get_model(),
@@ -86,15 +97,16 @@ class Runner():
                 trace_id=self.agent.get_trace_id()
             )
 
-            # Consume the stream and emit events for clients
             provider_response: ProviderResponse = None
             if stream:
+                # Consume the stream and emit events for clients
                 async for stream_event in provider.stream_response(llm_response):
                     if stream_event.type == Stream.PROVIDER_STREAM_COMPLETED:
                         provider_response = stream_event.data
                     else:
                         yield stream_event
             else:
+                # Parse LLM async (non-stream) response
                 provider_response = provider.response(llm_response)
             
             run_response.result.append(provider_response.message)
@@ -112,23 +124,25 @@ class Runner():
             if self.is_sub_agent:
                 run_response.sub_agent_result.append(provider_response.message)
 
+            # If no tools return by LLM means agent is done working
             if not provider_response.tool_calls:
                 logging.info(f"No tool calls made. Agent finished after {run_response.iterations} iterations.")
                 run_response.sub_agents_response = self.tool.get_sub_agents_response()
+                await self.tool.close_mcp_manager()
                 if stream:
                     # Yield agent finished event
                     yield RunnerStream.iteration_end(iteration_data)
-                    await self.tool.close_mcp_manager()
                     yield RunnerStream.agent_run_end(run_response)
-                    return
                 else:
                     yield run_response
-                    return
+                return
 
+            # Call tools return by LLM
             tool_responses: List[ToolCallResponse] = await self.tool.tool_calls(
                 provider_response.tool_calls, run_response.result
             )
 
+            # Collect tools response 
             for tool_response in tool_responses:
                 run_response.result.append(tool_response.model_dump())
                 if stream:
@@ -138,47 +152,56 @@ class Runner():
                 # Yield iteration end event
                 yield RunnerStream.iteration_end(iteration_data)
 
+        # Maximum agent iteration exhausted
         run_response.sub_agents_response = self.tool.get_sub_agents_response()
         run_response.max_iterations_reached = True
+        await self.tool.close_mcp_manager()
         if stream:
-            await self.tool.close_mcp_manager()
             yield RunnerStream.agent_run_end(run_response)
-        else:
-            yield run_response
             return
+        yield run_response
 
-    async def run_stream(self, input: List[Dict[str, Any]] = [{}]):
+    async def run_stream(
+        self,
+        input: List[Dict[str, Any]],
+        input_filter: Callable = None
+    ):
         try:
             self.tool = await Tool(self).init_tools(self.agent)
-            async for event in self.__execute(input, stream=True):
+            async for event in self.__execute(input=input, stream=True, input_filter=input_filter):
                 yield event
         except Exception as e:
             if self.tool:
                 await self.tool.close_mcp_manager()
             raise
 
-    async def run_async(self, input: List[Dict[str, Any]]):
+    async def run_async(
+        self,
+        input: List[Dict[str, Any]],
+        input_filter: Callable = None
+    ):
         try:
-            exec_result = None
             # If caller function is 'run_sub_agent', its a sub agent call
             if (sys._getframe(1).f_code.co_name) == 'run_sub_agent':
                 self.is_sub_agent = True
             self.tool = await Tool(self).init_tools(self.agent)
-            async for output in self.__execute(input):
-                exec_result = output
-            await self.tool.close_mcp_manager()
-            return exec_result
+            async for exec_result in self.__execute(input=input, input_filter=input_filter):
+                return exec_result
         except Exception as e:
             if self.tool:
                 await self.tool.close_mcp_manager()
             raise
 
-    def run(self, input: List[Dict[str, Any]] = [{}]):
+    def run(
+        self,
+        input: List[Dict[str, Any]],
+        input_filter: Callable = None
+    ):
         try:
-            return asyncio.run(self.run_async(input))
+            return asyncio.run(self.run_async(input=input, input_filter=input_filter))
         except Exception as e:
             raise
 
     @classmethod
-    async def run_sub_agent(cls, agent: Agent, input=[{}]):
+    async def run_sub_agent(cls, agent: Agent, input: List[Dict[str, Any]]):
         return await cls(agent).run_async(input=input)
