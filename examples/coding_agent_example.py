@@ -8,7 +8,7 @@ user approval flows and diff mechanisms.
 
 import os
 from stark import Agent, Runner
-from stark.tools.code import CodeTool
+from stark.tools import CodeTool
 
 def unit_test_agent():
     """Example: Basic file operations with user approval."""

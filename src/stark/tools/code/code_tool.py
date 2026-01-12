@@ -1,10 +1,8 @@
-import subprocess
-import shutil
-import difflib
+import subprocess, shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from ..tool import stark_tool
-
+from ...tool import stark_tool
+from .utils import generate_diff, get_full_path
 
 class CodeTool:
     """
@@ -24,13 +22,6 @@ class CodeTool:
         self.workspace_dir = Path(workspace_dir) if workspace_dir else Path.cwd()
         self.operation_history: List[Dict[str, Any]] = []
 
-    def __get_full_path(self, path: str) -> Path:
-        """Convert relative path to absolute path within workspace."""
-        full_path = Path(path)
-        if not full_path.is_absolute():
-            full_path = self.workspace_dir / path
-        return full_path.resolve()
-
     def __log_operation(self, operation: str, path: str, status: str, details: Optional[str] = None):
         """Log operation to history."""
         self.operation_history.append({
@@ -39,31 +30,6 @@ class CodeTool:
             "status": status,
             "details": details
         })
-
-    def generate_diff(self, original: str, modified: str, filepath: str = "file") -> str:
-        """
-        Generate unified diff between original and modified content.
-        
-        Args:
-            original: Original content
-            modified: Modified content
-            filepath: File path for diff header
-            
-        Returns:
-            Unified diff string
-        """
-        original_lines = original.splitlines(keepends=True)
-        modified_lines = modified.splitlines(keepends=True)
-        
-        diff = difflib.unified_diff(
-            original_lines,
-            modified_lines,
-            fromfile=f"a/{filepath}",
-            tofile=f"b/{filepath}",
-            lineterm=''
-        )
-        
-        return ''.join(diff)
 
     @stark_tool
     def shell_exec(self, cmd: str, dir_path: Optional[str] = None, timeout: int = 30) -> str:
@@ -78,7 +44,7 @@ class CodeTool:
         Returns:
             Command output (stdout + stderr) or error message
         """
-        exec_dir = self.__get_full_path(dir_path) if dir_path else self.workspace_dir
+        exec_dir = get_full_path(dir_path, self.workspace_dir) if dir_path else self.workspace_dir
         
         try:
             # Execute command
@@ -119,7 +85,7 @@ class CodeTool:
         Returns:
             Success message or error
         """
-        full_path = self.__get_full_path(path)
+        full_path = get_full_path(path, self.workspace_dir)
         file_exists = full_path.exists()
 
         try:
@@ -152,7 +118,7 @@ class CodeTool:
         Returns:
             File content or error message
         """
-        full_path = self.__get_full_path(path)
+        full_path = get_full_path(path, self.workspace_dir)
         
         try:
             if not full_path.exists():
@@ -184,7 +150,7 @@ class CodeTool:
         Returns:
             Success message or error
         """
-        full_path = self.__get_full_path(path)
+        full_path = get_full_path(path, self.workspace_dir)
         
         if not full_path.exists():
             return f"Error: Path does not exist: {full_path}"
@@ -223,7 +189,7 @@ class CodeTool:
         Returns:
             Success message with diff or error
         """
-        full_path = self.__get_full_path(path)
+        full_path = get_full_path(path, self.workspace_dir)
         
         try:
             if not full_path.exists():
@@ -240,7 +206,7 @@ class CodeTool:
                 return f"No changes: Search text not found in {full_path}"
             
             # Generate diff
-            diff = self.generate_diff(original_content, modified_content, str(path))
+            diff = generate_diff(original_content, modified_content, str(path))
             
             # Count replacements
             num_replacements = original_content.count(search) if count == -1 else min(count, original_content.count(search))
@@ -269,7 +235,7 @@ class CodeTool:
         Returns:
             Success message or error
         """
-        full_path = self.__get_full_path(path)
+        full_path = get_full_path(path, self.workspace_dir)
         
         if full_path.exists():
             return f"Error: Path already exists: {full_path}"
@@ -297,7 +263,7 @@ class CodeTool:
         Returns:
             Formatted list of files/directories or error
         """
-        full_path = self.__get_full_path(path)
+        full_path = get_full_path(path, self.workspace_dir)
         
         try:
             if not full_path.exists():
@@ -344,8 +310,8 @@ class CodeTool:
         Returns:
             Success message or error
         """
-        src_path = self.__get_full_path(source)
-        dst_path = self.__get_full_path(destination)
+        src_path = get_full_path(source, self.workspace_dir)
+        dst_path = get_full_path(destination, self.workspace_dir)
         
         if not src_path.exists():
             return f"Error: Source does not exist: {src_path}"
@@ -373,8 +339,8 @@ class CodeTool:
         Returns:
             Success message or error
         """
-        src_path = self.__get_full_path(source)
-        dst_path = self.__get_full_path(destination)
+        src_path = get_full_path(source, self.workspace_dir)
+        dst_path = get_full_path(destination, self.workspace_dir)
         
         if not src_path.exists():
             return f"Error: Source does not exist: {src_path}"
