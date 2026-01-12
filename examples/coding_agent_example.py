@@ -7,14 +7,17 @@ user approval flows and diff mechanisms.
 """
 
 import os
-from stark import Agent, Runner
+from stark import Agent, Runner, Util
 from stark.tools import CodeTool
+from stark.tools.code import approval_write
 
 def unit_test_agent():
     """Example: Basic file operations with user approval."""
     
     # Initialize Coding tools (auto_approve=False requires user confirmation)
-    coding_tools = CodeTool(auto_approve=False)
+    coding_tools = CodeTool()
+
+
     
     # Create an agent with coding tools
     agent = Agent(
@@ -65,7 +68,7 @@ def example_basic_usage():
     """Example: Basic file operations with user approval."""
     
     # Initialize Coding tools (auto_approve=False requires user confirmation)
-    coding_tools = CodeTool(auto_approve=False, workspace_dir="./workspace")
+    coding_tools = CodeTool(workspace_dir="./workspace")
     
     # Create an agent with coding tools
     agent = Agent(
@@ -76,7 +79,10 @@ def example_basic_usage():
         model="claude-sonnet-4-5-20250929",
         function_tools=[
             coding_tools
-        ]
+        ],
+        approvals = {
+            ".*write.*": Util.pass_function_with_args(approval_write, workspace_dir="./workspace")
+        }
     )
     
     # Example task: Create a Python file

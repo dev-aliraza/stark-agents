@@ -10,15 +10,13 @@ class CodeTool:
     Provides file/folder operations, shell execution, and content management with safety checks.
     """
 
-    def __init__(self, auto_approve: bool = False, workspace_dir: Optional[str] = None):
+    def __init__(self, workspace_dir: Optional[str] = None):
         """
         Initialize Coding tools.
         
         Args:
-            auto_approve: If True, skip user approval prompts (use with caution)
             workspace_dir: Base directory for file operations (defaults to current directory)
         """
-        self.auto_approve = auto_approve
         self.workspace_dir = Path(workspace_dir) if workspace_dir else Path.cwd()
         self.operation_history: List[Dict[str, Any]] = []
 
