@@ -1,16 +1,20 @@
-# Stark
+# Stark Agents
 
-A powerful Python SDK for building AI agents with support for MCP servers, function tools, and hierarchical sub-agents.
+A powerful Python SDK for building AI agents with support for MCP servers, function tools, hierarchical sub-agents, and advanced execution control.
 
 ## Features
 
-- 🤖 **Multi-LLM Support**: Built-in support for multiple LLM providers via LiteLLM
+- 🤖 **Multi-LLM Support**: Built-in support for OpenAI and Anthropic via LiteLLM
 - 🔧 **MCP Server Integration**: Connect to Model Context Protocol (MCP) servers for extended capabilities
-- 🛠️ **Function Tools**: Define custom Python functions as tools for your agents
+- 🛠️ **Function Tools**: Define custom Python functions or classes as tools with automatic schema generation
 - 🌳 **Hierarchical Agents**: Create complex agent hierarchies with sub-agents
 - 📡 **Streaming Support**: Real-time streaming of agent responses and tool calls
 - 🔄 **Async/Sync APIs**: Both synchronous and asynchronous execution modes
 - 📊 **Iteration Control**: Configurable maximum iterations to prevent infinite loops
+- 🔍 **Web Search**: Built-in web search capabilities for OpenAI and Anthropic models
+- ✅ **Tool Approvals**: Optional approval system for tool and sub-agent execution
+- 🎯 **Input Filtering**: Custom input filtering before LLM calls
+- 📝 **Tracing**: Built-in trace ID support for debugging and monitoring
 
 ## Installation
 
@@ -32,7 +36,7 @@ agent = Agent(
 )
 
 result = Runner(agent).run(input=[{"role": "user", "content": "Hello!"}])
-print(result)
+print(result.result[-1]["content"])
 ```
 
 ### Agent with MCP Servers
@@ -58,42 +62,96 @@ agent = Agent(
     mcp_servers=mcp_servers
 )
 
-result = Runner(agent).run(input=[{"role": "user", "content": "Send a message to #general"}])
+result = Runner(agent).run(
+    input=[{"role": "user", "content": "Send a message to #general"}]
+)
 ```
 
 ### Agent with Function Tools
 
-```python
-import json
-from stark import Agent, Runner
+#### Using the `@stark_tool` Decorator (Recommended)
 
-def search_database(input: str):
-    """
-    {
-        "description": "Search the database for information",
-        "parameters": {
-            "properties": {
-                "query": {
-                    "description": "Search query",
-                    "type": "string"
-                }
-            },
-            "required": ["query"],
-            "type": "object"
-        }
-    }
-    """
+The `@stark_tool` decorator automatically generates JSON schemas from your function signatures:
+
+```python
+from stark import Agent, Runner, stark_tool
+
+@stark_tool
+def search_database(query: str, limit: int = 10) -> str:
+    """Search the database for information"""
     # Your function implementation
-    return json.dumps({"results": ["item1", "item2"]})
+    results = ["item1", "item2"]
+    return f"Found {len(results)} results for '{query}'"
+
+@stark_tool
+def get_user_info(user_id: int, include_details: bool = False) -> str:
+    """Retrieve user information from the database"""
+    return f"User {user_id} details"
 
 agent = Agent(
     name="Search-Agent",
-    instructions="You can search the database",
+    instructions="You can search the database and get user info",
     model="claude-sonnet-4-5",
-    function_tools=[search_database]
+    function_tools=[search_database, get_user_info]
 )
 
-result = Runner(agent).run(input=[{"role": "user", "content": "Search for users"}])
+result = Runner(agent).run(
+    input=[{"role": "user", "content": "Search for users named John"}]
+)
+```
+
+#### Using Class-Based Tools
+
+You can also organize related tools into classes:
+
+```python
+from stark import Agent, Runner, stark_tool
+
+class DatabaseTools:
+    def __init__(self, db_connection):
+        self.db = db_connection
+    
+    @stark_tool
+    def search(self, query: str, limit: int = 10) -> str:
+        """Search the database"""
+        return f"Search results for: {query}"
+    
+    @stark_tool
+    def insert(self, table: str, data: dict) -> str:
+        """Insert data into a table"""
+        return f"Inserted into {table}"
+
+# Pass the class instance
+db_tools = DatabaseTools(db_connection="my_db")
+
+agent = Agent(
+    name="DB-Agent",
+    instructions="You can interact with the database",
+    model="claude-sonnet-4-5",
+    function_tools=[db_tools]
+)
+```
+
+#### Built-in Code Tools
+
+Stark includes a comprehensive `CodeTool` class for file operations:
+
+```python
+from stark import Agent, Runner
+from stark.tools import CodeTool
+
+code_tool = CodeTool(workspace_dir="./my_project")
+
+agent = Agent(
+    name="Code-Agent",
+    instructions="You can read, write, and manage files",
+    model="claude-sonnet-4-5",
+    function_tools=[code_tool]
+)
+
+result = Runner(agent).run(
+    input=[{"role": "user", "content": "Create a new Python file called app.py"}]
+)
 ```
 
 ### Hierarchical Sub-Agents
@@ -138,7 +196,7 @@ print(result.sub_agents_response.get("Delivery-Agent"))
 
 ```python
 import asyncio
-from stark import Agent, Runner, RunnerStream
+from stark import Agent, Runner, RunnerStream, Stream
 
 async def main():
     agent = Agent(
@@ -150,19 +208,118 @@ async def main():
     async for event in Runner(agent).run_stream(
         input=[{"role": "user", "content": "Tell me a story"}]
     ):
-        if event.type == RunnerStream.CONTENT_CHUNK:
+        if event.type == Stream.CONTENT_CHUNK:
             print(RunnerStream.data_dump(event), end="", flush=True)
         
-        elif event.type == RunnerStream.TOOL_CALLS:
+        elif event.type == Stream.TOOL_CALLS:
             print(f"\nTool calls: {RunnerStream.data_dump(event)}")
         
-        elif event.type == RunnerStream.TOOL_RESPONSE:
+        elif event.type == Stream.TOOL_RESPONSE:
             print(f"Tool response: {RunnerStream.data_dump(event)}")
         
-        elif event.type == RunnerStream.AGENT_RUN_END:
+        elif event.type == Stream.ITER_START:
+            print(f"\n--- Iteration {RunnerStream.data_dump(event)} ---")
+        
+        elif event.type == Stream.ITER_END:
+            print(f"\n--- Iteration Complete ---")
+        
+        elif event.type == Stream.AGENT_RUN_END:
             print(f"\nAgent finished: {RunnerStream.data_dump(event)}")
 
 asyncio.run(main())
+```
+
+### Web Search
+
+Enable web search capabilities for your agents:
+
+```python
+from stark import Agent, Runner
+from stark.llm_providers import OPENAI, ANTHROPIC
+
+# OpenAI web search
+openai_agent = Agent(
+    name="Research-Agent",
+    instructions="You can search the web for information",
+    model="gpt-4o",
+    llm_provider=OPENAI,
+    enable_web_search=True
+)
+
+# Anthropic web search
+anthropic_agent = Agent(
+    name="Research-Agent",
+    instructions="You can search the web for information",
+    model="claude-sonnet-4-5",
+    llm_provider=ANTHROPIC,
+    enable_web_search=True
+)
+
+result = Runner(openai_agent).run(
+    input=[{"role": "user", "content": "What's the latest news about AI?"}]
+)
+```
+
+### Tool Approvals
+
+Implement approval workflows for sensitive operations:
+
+```python
+from stark import Agent, Runner
+
+def approve_file_deletion(tool_name: str, arguments: dict) -> bool:
+    """Approve file deletion operations"""
+    file_path = arguments.get("path", "")
+    print(f"Approve deletion of {file_path}? (y/n)")
+    return input().lower() == 'y'
+
+async def approve_api_call(tool_name: str, arguments: dict) -> bool:
+    """Async approval for API calls"""
+    print(f"Approve API call to {tool_name}? (y/n)")
+    return input().lower() == 'y'
+
+agent = Agent(
+    name="Controlled-Agent",
+    instructions="You can perform file operations",
+    model="claude-sonnet-4-5",
+    function_tools=[file_tool],
+    approvals={
+        "delete": approve_file_deletion,  # Matches tool names containing "delete"
+        "api_.*": approve_api_call,       # Regex pattern for API tools
+    }
+)
+```
+
+### Input Filtering
+
+Filter or modify input before sending to the LLM:
+
+```python
+from stark import Agent, Runner
+
+def filter_sensitive_data(messages: list) -> list:
+    """Remove sensitive information from messages"""
+    filtered = []
+    for msg in messages:
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            # Remove credit card numbers, etc.
+            content = content.replace("1234-5678-9012-3456", "[REDACTED]")
+            filtered.append({"role": msg["role"], "content": content})
+        else:
+            filtered.append(msg)
+    return filtered
+
+agent = Agent(
+    name="Secure-Agent",
+    instructions="You are a helpful assistant",
+    model="claude-sonnet-4-5"
+)
+
+result = Runner(agent).run(
+    input=[{"role": "user", "content": "My card is 1234-5678-9012-3456"}],
+    input_filter=filter_sensitive_data
+)
 ```
 
 ## API Reference
@@ -173,18 +330,20 @@ The main agent class that defines the behavior and capabilities of your AI agent
 
 ```python
 Agent(
-    name: str,                              # Agent name
-    instructions: str,                      # System instructions/prompt
-    model: str,                             # LLM model to use
-    description: str = "",                  # Agent description (required for sub-agents)
-    mcp_servers: Dict[str, Any] = [],      # MCP server configurations
-    function_tools: List[Callable] = [],   # Custom function tools
-    sub_agents: List[Agent] = [],          # Sub-agents
-    parallel_tool_calls: bool = None,      # Enable parallel tool execution
-    llm_provider: str = LITELLM,           # LLM provider
-    max_iterations: int = 10,              # Maximum iterations
-    custom_llm_provider: str = "openai",   # Custom LLM provider
-    trace_id: str = None                   # Trace ID for debugging
+    name: str,                                    # Agent name (required)
+    instructions: str,                            # System instructions/prompt (required)
+    model: str,                                   # LLM model to use (required)
+    description: str = "",                        # Agent description (required for sub-agents)
+    mcp_servers: Dict[str, Any] = [],            # MCP server configurations
+    function_tools: List[Callable] = [],         # Custom function tools or class instances
+    enable_web_search: bool = False,             # Enable web search capabilities
+    sub_agents: List[Agent] = [],                # Sub-agents for delegation
+    approvals: Dict[str, Callable] = None,       # Tool approval functions (regex patterns)
+    parallel_tool_calls: bool = None,            # Enable parallel tool execution
+    llm_provider: str = OPENAI,                  # LLM provider (OPENAI or ANTHROPIC)
+    max_iterations: int = 10,                    # Maximum iterations before stopping
+    max_output_tokens: int = None,               # Maximum tokens in response
+    trace_id: str = None                         # Trace ID for debugging
 )
 ```
 
@@ -196,21 +355,30 @@ Executes agents and manages their lifecycle.
 
 ```python
 runner = Runner(agent)
-result = runner.run(input=[{"role": "user", "content": "Hello"}])
+result = runner.run(
+    input=[{"role": "user", "content": "Hello"}],
+    input_filter=None  # Optional input filter function
+)
 ```
 
 #### Asynchronous Execution
 
 ```python
 runner = Runner(agent)
-result = await runner.run_async(input=[{"role": "user", "content": "Hello"}])
+result = await runner.run_async(
+    input=[{"role": "user", "content": "Hello"}],
+    input_filter=None  # Optional input filter function
+)
 ```
 
 #### Streaming Execution
 
 ```python
 runner = Runner(agent)
-async for event in runner.run_stream(input=[{"role": "user", "content": "Hello"}]):
+async for event in runner.run_stream(
+    input=[{"role": "user", "content": "Hello"}],
+    input_filter=None  # Optional input filter function
+):
     # Handle events
     pass
 ```
@@ -224,7 +392,7 @@ class RunResponse:
     result: List[Dict[str, Any]]           # Complete conversation history
     iterations: int                         # Number of iterations executed
     sub_agent_result: List[Dict[str, Any]] # Sub-agent specific results
-    sub_agents_response: Dict[str, Any]    # Responses from sub-agents
+    sub_agents_response: Dict[str, Any]    # Responses from all sub-agents
     max_iterations_reached: bool           # Whether max iterations was hit
 ```
 
@@ -232,13 +400,50 @@ class RunResponse:
 
 When using streaming, you'll receive different event types:
 
-- `RunnerStream.ITER_START`: Iteration started
-- `RunnerStream.CONTENT_CHUNK`: Content chunk received
-- `RunnerStream.TOOL_CALLS`: Tool calls made
-- `RunnerStream.TOOL_RESPONSE`: Tool response received
-- `RunnerStream.ITER_END`: Iteration completed
-- `RunnerStream.AGENT_RUN_END`: Agent execution finished
-- `RunnerStream.MODEL_STREAM_COMPLETED`: Model streaming completed
+**Runner Events:**
+- `Stream.ITER_START`: Iteration started (data: iteration number)
+- `Stream.TOOL_RESPONSE`: Tool response received (data: ToolCallResponse)
+- `Stream.ITER_END`: Iteration completed (data: IterationData)
+- `Stream.AGENT_RUN_END`: Agent execution finished (data: RunResponse)
+
+**Provider Events:**
+- `Stream.CONTENT_CHUNK`: Content chunk received (data: string)
+- `Stream.TOOL_CALLS`: Tool calls made (data: list of tool calls)
+- `Stream.PROVIDER_STREAM_COMPLETED`: Provider streaming completed (data: ProviderResponse)
+
+### Utility Classes
+
+#### Util
+
+Helper utilities for common operations:
+
+```python
+from stark import Util
+
+# Parse JSON from LLM responses (handles markdown code blocks)
+data = Util.load_json('```json\n{"key": "value"}\n```')
+
+# Create partial functions with pre-filled arguments
+from functools import partial
+approval_func = Util.pass_function_with_args(my_approval, user_id=123)
+```
+
+#### RunnerStream
+
+Helper methods for working with stream events:
+
+```python
+from stark import RunnerStream
+
+# Create stream events
+event = RunnerStream.iteration_start(1)
+event = RunnerStream.tool_response(tool_response)
+event = RunnerStream.iteration_end(iteration_data)
+event = RunnerStream.agent_run_end(run_response)
+
+# Dump event data to string
+data_str = RunnerStream.data_dump(event)
+```
 
 ## MCP Server Configuration
 
@@ -283,55 +488,117 @@ mcp_servers = {
 
 ## Function Tools
 
-Function tools are Python functions that agents can call. They must include a JSON schema in their docstring.
+### Using the `@stark_tool` Decorator
 
-### Function Tool Format
+The `@stark_tool` decorator automatically generates JSON schemas from Python type hints:
 
 ```python
-def my_tool(input: str):
+from stark import stark_tool
+from typing import List
+
+@stark_tool
+def my_tool(
+    query: str,                    # Required parameter
+    limit: int = 10,               # Optional with default
+    tags: List[str] = None,        # Optional list
+    include_metadata: bool = False # Optional boolean
+) -> str:
     """
-    {
-        "description": "Description of what the tool does",
-        "parameters": {
-            "properties": {
-                "param_name": {
-                    "description": "Parameter description",
-                    "type": "string"
-                }
-            },
-            "required": ["param_name"],
-            "type": "object"
-        }
-    }
+    Description of what the tool does.
+    This docstring becomes the tool description.
     """
-    # Parse input if needed
-    if isinstance(input, str):
-        input = json.loads(input)
-    
     # Your implementation
-    result = {"status": "success"}
+    return "result"
+```
+
+**Supported Types:**
+- `str` → string
+- `int` → integer
+- `float` → number
+- `bool` → boolean
+- `dict` → object
+- `List[T]` → array with items of type T
+
+### Class-Based Tools
+
+Organize related tools into classes:
+
+```python
+from stark import stark_tool
+
+class MyTools:
+    def __init__(self, config):
+        self.config = config
     
-    # Return as JSON string
-    return json.dumps(result)
+    @stark_tool
+    def tool_one(self, param: str) -> str:
+        """First tool description"""
+        return f"Result: {param}"
+    
+    @stark_tool
+    def tool_two(self, value: int) -> str:
+        """Second tool description"""
+        return f"Value: {value}"
+
+# Use the class instance
+tools = MyTools(config="my_config")
+agent = Agent(
+    name="Agent",
+    instructions="Instructions",
+    model="claude-sonnet-4-5",
+    function_tools=[tools]
+)
+```
+
+### Built-in CodeTool
+
+The `CodeTool` class provides comprehensive file and shell operations:
+
+```python
+from stark.tools import CodeTool
+
+code_tool = CodeTool(workspace_dir="./project")
+
+# Available methods:
+# - read(path, encoding='utf-8')
+# - write(path, content, create_dirs=True)
+# - update(path, search, replace, count=-1)
+# - delete(path, recursive=False)
+# - create_directory(path, parents=True)
+# - list_directory(path=".", pattern="*", recursive=False)
+# - move(source, destination)
+# - copy(source, destination, recursive=True)
+# - shell_exec(cmd, dir_path=None, timeout=30)
 ```
 
 ## Advanced Usage
 
-### Custom LLM Provider
+### LLM Providers
 
 ```python
-from stark.llms import LITELLM
+from stark import Agent, Runner
+from stark.llm_providers import OPENAI, ANTHROPIC
 
-agent = Agent(
-    name="Custom-Agent",
+# OpenAI
+openai_agent = Agent(
+    name="OpenAI-Agent",
     instructions="You are a helpful assistant",
-    model="gpt-4",
-    llm_provider=LITELLM,
-    custom_llm_provider="openai"
+    model="gpt-4o",
+    llm_provider=OPENAI
+)
+
+# Anthropic
+anthropic_agent = Agent(
+    name="Anthropic-Agent",
+    instructions="You are a helpful assistant",
+    model="claude-sonnet-4-5",
+    llm_provider=ANTHROPIC
 )
 ```
 
 ### Parallel Tool Calls
+
+Enable parallel execution of multiple tools:
 
 ```python
 agent = Agent(
@@ -359,15 +626,49 @@ if result.max_iterations_reached:
     print("Warning: Agent reached maximum iterations!")
 ```
 
+### Token Limits
+
+Control the maximum output tokens:
+
+```python
+agent = Agent(
+    name="Limited-Agent",
+    instructions="You are a helpful assistant",
+    model="claude-sonnet-4-5",
+    max_output_tokens=1000  # Limit response to 1000 tokens
+)
+```
+
+### Tracing and Debugging
+
+Use trace IDs to track agent execution:
+
+```python
+import uuid
+
+agent = Agent(
+    name="Traced-Agent",
+    instructions="You are a helpful assistant",
+    model="claude-sonnet-4-5",
+    trace_id=str(uuid.uuid4())
+)
+
+result = Runner(agent).run(input=[{"role": "user", "content": "Hello"}])
+print(f"Trace ID: {agent.get_trace_id()}")
+```
+
 ## Best Practices
 
 1. **Clear Instructions**: Provide clear, specific instructions to guide agent behavior
-2. **Tool Descriptions**: Write detailed descriptions for function tools
+2. **Tool Descriptions**: Write detailed descriptions for function tools and sub-agents
 3. **Error Handling**: Always wrap agent execution in try-except blocks
 4. **Iteration Limits**: Set appropriate `max_iterations` to prevent infinite loops
 5. **Resource Cleanup**: MCP server connections are automatically cleaned up
 6. **Streaming**: Use streaming for long-running tasks to provide real-time feedback
 7. **Sub-Agent Descriptions**: Always provide descriptions for sub-agents so the parent agent knows when to use them
+8. **Type Hints**: Use type hints with `@stark_tool` for automatic schema generation
+9. **Approvals**: Implement approval workflows for sensitive operations
+10. **Input Filtering**: Use input filters to sanitize or modify data before LLM processing
 
 ## Error Handling
 
@@ -385,18 +686,38 @@ try:
         input=[{"role": "user", "content": "Hello"}]
     )
     
+    if result.max_iterations_reached:
+        print("Warning: Maximum iterations reached")
+    
 except Exception as e:
     print(f"Error: {e}")
     # Handle error appropriately
 ```
 
+## Examples
+
+Check out the `examples/` directory for more comprehensive examples:
+
+- Basic agent usage
+- MCP server integration
+- Function tools and class-based tools
+- Hierarchical sub-agents
+- Streaming responses
+- Web search integration
+- Tool approvals and input filtering
+
 ## Requirements
 
-Python 3.10 or higher.
+- Python 3.10 or higher
+- Dependencies are automatically installed with the package
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
+
+## License
+
+See LICENSE file for details.
 
 ## Support
 
