@@ -11,6 +11,7 @@ class Agent():
         function_tools: Optional[List[Callable]] = [],
         enable_web_search: Optional[bool] = False,
         sub_agents: Optional[List['Agent']] = [],
+        approvals: Optional[Dict[str, Callable]]= None, # This can be use to approve tools and sub agents
         parallel_tool_calls: Optional[bool] = None,
         llm_provider: Optional[str] = OPENAI,
         max_iterations: Optional[int] = 10,
@@ -25,6 +26,7 @@ class Agent():
         self.function_tools = function_tools
         self.enable_web_search = enable_web_search
         self.sub_agents = sub_agents
+        self.approvals = approvals
         self.parallel_tool_calls = parallel_tool_calls
         self.llm_provider = llm_provider
         self.max_iterations = max_iterations
@@ -54,6 +56,9 @@ class Agent():
     
     def get_sub_agents(self) -> Optional[List['Agent']]:
         return self.sub_agents
+    
+    def get_approvals(self) -> Optional[Dict[str, Callable]]:
+        return self.approvals
     
     def get_parallel_tool_calls(self) -> Optional[bool]:
         return self.parallel_tool_calls

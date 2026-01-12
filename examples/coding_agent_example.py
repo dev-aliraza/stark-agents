@@ -8,13 +8,13 @@ user approval flows and diff mechanisms.
 
 import os
 from stark import Agent, Runner
-from stark.tools.coding import Coding
+from stark.tools.code import CodeTool
 
 def unit_test_agent():
     """Example: Basic file operations with user approval."""
     
     # Initialize Coding tools (auto_approve=False requires user confirmation)
-    coding_tools = Coding(auto_approve=False)
+    coding_tools = CodeTool(auto_approve=False)
     
     # Create an agent with coding tools
     agent = Agent(
@@ -65,7 +65,7 @@ def example_basic_usage():
     """Example: Basic file operations with user approval."""
     
     # Initialize Coding tools (auto_approve=False requires user confirmation)
-    coding_tools = Coding(auto_approve=False, workspace_dir="./workspace")
+    coding_tools = CodeTool(auto_approve=False, workspace_dir="./workspace")
     
     # Create an agent with coding tools
     agent = Agent(

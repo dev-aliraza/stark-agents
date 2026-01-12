@@ -1,4 +1,4 @@
-import logging, json, inspect, functools
+import logging, json, inspect, functools, re
 from typing import List, Dict, Any, get_type_hints, get_origin, get_args
 from .mcp import MCPManager
 from .function import FunctionToolManager
@@ -98,8 +98,10 @@ class Tool:
         self.sub_agent_manager = None
         self.tools = []
         self.sub_agents_response = {}
+        self.agent = None
 
     async def init_tools(self, agent: Agent):
+        self.agent = agent
         mcp_servers = agent.get_mcp_servers()
         function_tools = agent.get_function_tools()
         sub_agents = agent.get_sub_agents()
@@ -130,6 +132,30 @@ class Tool:
     def get_sub_agents_response(self) -> Dict:
         return self.sub_agents_response
     
+    async def __is_tool_approved(self, tool_name: str, arguments: Dict) -> bool:
+        approvals = self.agent.get_approvals()
+        if not approvals:
+            return True
+        
+        tool_for_approval = {tool_name: v for k, v in approvals.items() if re.search(fr"{k.lower()}", tool_name.lower())}
+        if not tool_for_approval:
+            return True
+        
+        if len(tool_for_approval) > 1:
+            print("===== According to regex search, multiple tools are found for approval =====")
+            return False
+        
+        try:
+            approval_func = tool_for_approval[tool_name]
+            args = {"tool_name": tool_name, "arguments": arguments}
+            if inspect.iscoroutinefunction(approval_func):
+                return await approval_func(**args)
+            else:
+                return approval_func(**args)
+        except Exception as e:
+            print(f"Exception Occur: {str(e)}")
+            return False
+
     async def tool_calls(
         self, ai_tool_calls,
         messages: List[Dict[str, Any]] = [{}]
@@ -160,6 +186,10 @@ class Tool:
         logging.info(f"🔧 Tool request: {tool_call_id}")
         logging.info(f"🔧 Tool name: {tool_name}")
         logging.info(f"🔧 Tool Args: {arguments}")
+
+        if not (await self.__is_tool_approved(tool_name, arguments)):
+            tool_result = f"Tool name ({tool_name}) didn't execute because the approval got rejected by the user. Just respond that the action to {{ Add Action Name }} was not approved by user and no additional information or question"
+            return ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result)
 
         if self.mcp_manager and self.mcp_manager.is_mcp_tool(tool_name):
             try:

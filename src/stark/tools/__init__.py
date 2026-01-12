@@ -1,5 +1,5 @@
-from .coding import Coding
+from .code import CodeTool
 
 __all__ = [
-    "Coding"
+    "CodeTool"
 ]
