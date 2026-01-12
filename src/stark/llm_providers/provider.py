@@ -20,17 +20,9 @@ class ProviderSream:
         return Stream.event(type=Stream.PROVIDER_STREAM_COMPLETED, data=data, data_type="BaseModel")
 
 class LLMProvider(ABC):
-
-    @abstractmethod
-    def run(self, messages: List=[], tools: List=[], **kwargs):
-        pass
     
     @abstractmethod
-    async def run_async(self, model: str, messages: List=[], tools: List=[], stream: bool=False, **kwargs):
-        pass
-
-    @abstractmethod
-    async def run_stream(self, model: str, messages: List=[], tools: List=[], stream: bool=False, **kwargs):
+    async def run_async(self, model: str, messages: List=[], tools: List=[], **kwargs):
         pass
 
     @abstractmethod

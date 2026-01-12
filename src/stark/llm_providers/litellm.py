@@ -9,21 +9,6 @@ class LiteLLM(LLMProvider):
         self.api_key = os.environ.get("LITELLM_API_KEY", None)
         self.provider = provider
 
-    def run(self, model: str, messages: List=[], tools: List=[], **kwargs):
-        metadata: Dict[str, Any] = {}
-        if "trace_id" in kwargs:
-            metadata["trace_id"] = kwargs.pop("trace_id")
-
-        return litellm.completion(
-            model=(self.provider + "/" + model),
-            messages=messages,
-            tools=tools,
-            api_base=self.api_base,
-            api_key=self.api_key,
-            metadata=metadata,
-            **kwargs
-        )
-    
     async def run_async(self, model: str, messages: List=[], tools: List=[], **kwargs):
         metadata: Dict[str, Any] = {}
         if "trace_id" in kwargs:
@@ -33,29 +18,12 @@ class LiteLLM(LLMProvider):
             model=(self.provider + "/" + model),
             messages=messages,
             tools=tools,
-            stream=False,
             api_base=self.api_base,
             api_key=self.api_key,
             metadata=metadata,
             **kwargs
         )
 
-    async def run_stream(self, model: str, messages: List=[], tools: List=[], **kwargs):
-        metadata: Dict[str, Any] = {}
-        if "trace_id" in kwargs:
-            metadata["trace_id"] = kwargs.pop("trace_id")
-
-        return await litellm.acompletion(
-            model=(self.provider + "/" + model),
-            messages=messages,
-            tools=tools,
-            stream=True,
-            api_base=self.api_base,
-            api_key=self.api_key,
-            metadata=metadata,
-            **kwargs
-        )
-    
     def response(self, response) -> ProviderResponse:
         provider_response = ProviderResponse(content="", tool_calls=[], message={"role": "assistant"})
 
