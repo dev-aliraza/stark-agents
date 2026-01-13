@@ -110,6 +110,5 @@ class SubAgentManager():
 
     async def execute(self, runner_instance, agent_name, input: List[Dict[str, Any]]):
         agent = self.agent_name_map[agent_name]
-        input = list(input) # list copy - to avoid deleting tool call from original run response result
         input.pop()
         return await runner_instance.run_sub_agent(agent, input)

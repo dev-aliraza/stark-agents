@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import List, AsyncIterator
-from ..type import Stream, ProviderResponse
+from ..type import Stream, ModelOutput
 
 OPENAI = "openai"
 ANTHROPIC = "anthropic"
+VERTEX_AI = "vertex_ai"
 
 class ProviderSream:
     
@@ -16,8 +17,8 @@ class ProviderSream:
         return Stream.event(type=Stream.TOOL_CALLS, data=data, data_type="List")
     
     @classmethod
-    def provider_stream_completed(cls, data: ProviderResponse) -> Stream.Event:
-        return Stream.event(type=Stream.PROVIDER_STREAM_COMPLETED, data=data, data_type="BaseModel")
+    def model_stream_completed(cls, data: ModelOutput) -> Stream.Event:
+        return Stream.event(type=Stream.MODEL_STREAM_COMPLETED, data=data, data_type="BaseModel")
 
 class LLMProvider(ABC):
     
@@ -26,9 +27,9 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def response(self, response) -> ProviderResponse:
-        return ProviderResponse(content="", tool_calls=[], message={})
+    async def response(self, response) -> ModelOutput:
+        return ModelOutput(role="assistant")
 
     @abstractmethod
     async def stream_response(self, response) -> AsyncIterator[Stream.Event]:
-        yield ProviderSream.provider_stream_completed(None)
+        yield ProviderSream.model_stream_completed(None)

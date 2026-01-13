@@ -383,17 +383,18 @@ async for event in runner.run_stream(
     pass
 ```
 
-### RunResponse
+### RunContext
 
 The response object returned by agent execution.
 
 ```python
-class RunResponse:
-    result: List[Dict[str, Any]]           # Complete conversation history
-    iterations: int                         # Number of iterations executed
-    sub_agent_result: List[Dict[str, Any]] # Sub-agent specific results
-    sub_agents_response: Dict[str, Any]    # Responses from all sub-agents
-    max_iterations_reached: bool           # Whether max iterations was hit
+class RunContext:
+    messages: List[Dict[str, Any]]              # Complete conversation history
+    output: str                                 # Final output of the agent
+    iterations: int                             # Number of iterations executed
+    subagents_messages: List[Dict[str, Any]]    # Sub-agent messages (typically empty for Single Agent or Master Agent)
+    subagents_response: Dict[str, Any]          # Responses from all sub-agents (typically empty for Single Agent)
+    max_iterations_reached: bool                # Whether max iterations was hit
 ```
 
 ### Stream Events
@@ -404,7 +405,7 @@ When using streaming, you'll receive different event types:
 - `Stream.ITER_START`: Iteration started (data: iteration number)
 - `Stream.TOOL_RESPONSE`: Tool response received (data: ToolCallResponse)
 - `Stream.ITER_END`: Iteration completed (data: IterationData)
-- `Stream.AGENT_RUN_END`: Agent execution finished (data: RunResponse)
+- `Stream.AGENT_RUN_END`: Agent execution finished (data: RunContext)
 
 **Provider Events:**
 - `Stream.CONTENT_CHUNK`: Content chunk received (data: string)

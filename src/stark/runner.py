@@ -1,12 +1,13 @@
 import logging, json, asyncio, sys
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, AsyncIterator
 from .agent import Agent
 from .llm import init_llm
 from .llm_providers.provider import LLMProvider
 from .tool import Tool
 from .type import (
-    Stream, ProviderResponse, RunResponse, ToolCallResponse, IterationData
+    Stream, RunContext, ToolCallResponse, IterationData, ModelOutput
 )
+from .util import Util
 
 class RunnerStream:
 
@@ -23,7 +24,7 @@ class RunnerStream:
         return Stream.event(type=Stream.ITER_END, data=data, data_type="BaseModel")
     
     @classmethod
-    def agent_run_end(cls, data: RunResponse) -> Stream.Event:
+    def agent_run_end(cls, data: RunContext) -> Stream.Event:
         return Stream.event(type=Stream.AGENT_RUN_END, data=data, data_type="BaseModel")
     
     @classmethod
@@ -49,47 +50,63 @@ class Runner():
         self.tool = None
         self.is_sub_agent = False
     
-    def __set_agent_instructions(self, messages: List, system_prompt):
+    def __set_agent_instructions(self, messages: List[Dict], system_prompt: str):
         if not system_prompt:
             return messages
         
-        system_prompt_msg = {"role": "system", "content": system_prompt}
-        if not messages or (len(messages) == 1 and messages[0].get("role") != "system"):
-            messages.insert(0, system_prompt_msg)
+        if len(messages) > 0 and messages[0].get("role") == "system":
+            messages[0]["content"] = system_prompt
         else:
-            messages.append(system_prompt_msg)
+            messages.insert(0, {"role": "system", "content": system_prompt})
+        
         return messages
+    
+    async def __input_hook(self, hook: Callable, run_response: RunContext) -> RunContext:
+        if not hook:
+            return run_response
+        return hook(run_response.model_copy(deep=True))
+    
+    async def __execution_response(
+        self,
+        run_context: RunContext,
+        stream = False,
+        max_iterations_reached = False
+    ) -> RunContext | AsyncIterator[Stream.Event]:
+        run_context.output = run_context.messages[-1]["content"] if "content" in run_context.messages[-1] else "No Output"
+        if max_iterations_reached:
+            run_context.max_iterations_reached = True
+        await self.tool.close_mcp_manager()
+        if stream:
+            return RunnerStream.agent_run_end(run_context)
+        else:
+            return run_context
 
     async def __execute(
         self, input: List[Dict[str, Any]],
         stream: bool = False,
-        input_filter: Callable = None
-    ):
+        input_hook: Callable = None,
+        iteration_end_hook: Callable = None
+    ) -> AsyncIterator[RunContext] | AsyncIterator[Stream.Event]:
         # Set system prompt for the model input
         input = self.__set_agent_instructions(input, self.agent.get_instructions())
-        run_response = RunResponse(result=input, iterations=0)
-        # If sub agent, get the last index value of the input. It will be the system prompt in any way.
-        if self.is_sub_agent and self.agent.get_instructions():
-            run_response.sub_agent_result.append(input[-1])
+        run_context = RunContext(messages=input, iterations=0)
 
-        while run_response.iterations < self.agent.get_max_iterations():
-            run_response.iterations += 1
+        while run_context.iterations < self.agent.get_max_iterations():
+            run_context.iterations += 1
 
             if stream:
-                yield RunnerStream.iteration_start(run_response.iterations)
+                yield RunnerStream.iteration_start(run_context.iterations)
 
-            # Filter input before sending input to the LLM call
-            if input_filter:
-                run_response.result = input_filter(run_response.result)
-                if not isinstance(run_response.result, list) or len(run_response.result) < 1:
-                    yield run_response
-                    return
+            hook_response = await self.__input_hook(input_hook, run_context)
+            if not isinstance(hook_response, RunContext):
+                run_context.error = "Input hook response is not the RunContext type"
+                yield await self.__execution_response(run_context, stream=stream); return
             
             # Run the LLM
             provider: LLMProvider = init_llm(self.agent.get_llm_provider())
             llm_response = await provider.run_async(
                 model=self.agent.get_model(),
-                messages=run_response.result,
+                messages=run_context.messages,
                 tools=self.tool.get_tools(),
                 stream=stream,
                 parallel_tool_calls = self.agent.get_parallel_tool_calls(),
@@ -97,78 +114,79 @@ class Runner():
                 trace_id=self.agent.get_trace_id()
             )
 
-            provider_response: ProviderResponse = None
+            model_output: ModelOutput = None
             if stream:
                 # Consume the stream and emit events for clients
                 async for stream_event in provider.stream_response(llm_response):
-                    if stream_event.type == Stream.PROVIDER_STREAM_COMPLETED:
-                        provider_response = stream_event.data
+                    if stream_event.type == Stream.MODEL_STREAM_COMPLETED:
+                        model_output = stream_event.data
                     else:
                         yield stream_event
             else:
                 # Parse LLM async (non-stream) response
-                provider_response = provider.response(llm_response)
+                model_output = provider.response(llm_response)
             
-            run_response.result.append(provider_response.message)
+            run_context.messages.append(model_output.model_dump(exclude_defaults=True))
 
             iteration_data = IterationData(
-                iterations=run_response.iterations,
-                has_tool_calls=bool(provider_response.tool_calls)
+                iterations=run_context.iterations,
+                has_tool_calls=bool(model_output.tool_calls)
             )
 
             logging.info(
-                f"Iteration {run_response.iterations}: Received response - "
-                f"content length: {len(provider_response.content)} chars, tool_calls: {len(provider_response.tool_calls)}"
+                f"Iteration {run_context.iterations}: Received response - "
+                f"content length: {len(model_output.content)} chars, tool_calls: {len(model_output.tool_calls)}"
             )
 
-            if self.is_sub_agent:
-                run_response.sub_agent_result.append(provider_response.message)
-
             # If no tools return by LLM means agent is done working
-            if not provider_response.tool_calls:
-                logging.info(f"No tool calls made. Agent finished after {run_response.iterations} iterations.")
-                run_response.sub_agents_response = self.tool.get_sub_agents_response()
-                await self.tool.close_mcp_manager()
+            if not model_output.tool_calls:
+                logging.info(f"No tool calls made. Agent finished after {run_context.iterations} iterations.")
                 if stream:
-                    # Yield agent finished event
                     yield RunnerStream.iteration_end(iteration_data)
-                    yield RunnerStream.agent_run_end(run_response)
-                else:
-                    yield run_response
-                return
+                yield await self.__execution_response(run_context, stream=stream); return
 
             # Call tools return by LLM
             tool_responses: List[ToolCallResponse] = await self.tool.tool_calls(
-                provider_response.tool_calls, run_response.result
+                model_output.tool_calls, run_context
             )
 
-            # Collect tools response 
+            # Collect tools response
             for tool_response in tool_responses:
-                run_response.result.append(tool_response.model_dump())
+                run_context.messages.append(tool_response.model_dump())
                 if stream:
                     yield RunnerStream.tool_response(tool_response)
+
+            # Filter the response before the next agent iteration
+            # Usecases: To stop agent conditionally or persist the output somewhere
+            if iteration_end_hook and not iteration_end_hook(run_context):
+                run_context.error = "loop_output_hook returned had an error"
+                yield await self.__execution_response(run_context, stream=stream); return
 
             if stream:
                 # Yield iteration end event
                 yield RunnerStream.iteration_end(iteration_data)
 
         # Maximum agent iteration exhausted
-        run_response.sub_agents_response = self.tool.get_sub_agents_response()
-        run_response.max_iterations_reached = True
-        await self.tool.close_mcp_manager()
-        if stream:
-            yield RunnerStream.agent_run_end(run_response)
-            return
-        yield run_response
+        yield await self.__execution_response(
+            run_context,
+            stream=stream,
+            max_iterations_reached=True
+        ); return
 
     async def run_stream(
         self,
         input: List[Dict[str, Any]],
-        input_filter: Callable = None
-    ):
+        input_hook: Callable = None,
+        iteration_end_hook: Callable = None
+    ) -> AsyncIterator[Stream.Event]:
         try:
             self.tool = await Tool(self).init_tools(self.agent)
-            async for event in self.__execute(input=input, stream=True, input_filter=input_filter):
+            async for event in self.__execute(
+                input=input,
+                stream=True,
+                input_hook=input_hook,
+                iteration_end_hook=iteration_end_hook
+            ):
                 yield event
         except Exception as e:
             if self.tool:
@@ -178,15 +196,19 @@ class Runner():
     async def run_async(
         self,
         input: List[Dict[str, Any]],
-        input_filter: Callable = None
-    ):
+        input_hook: Callable = None,
+        iteration_end_hook: Callable = None
+    ) -> RunContext:
         try:
             # If caller function is 'run_sub_agent', its a sub agent call
             if (sys._getframe(1).f_code.co_name) == 'run_sub_agent':
                 self.is_sub_agent = True
             self.tool = await Tool(self).init_tools(self.agent)
-            async for exec_result in self.__execute(input=input, input_filter=input_filter):
-                return exec_result
+            return await self.__execute(
+                input=input,
+                input_hook=input_hook,
+                iteration_end_hook=iteration_end_hook
+            ).__anext__()
         except Exception as e:
             if self.tool:
                 await self.tool.close_mcp_manager()
@@ -195,10 +217,17 @@ class Runner():
     def run(
         self,
         input: List[Dict[str, Any]],
-        input_filter: Callable = None
-    ):
+        input_hook: Callable = None,
+        iteration_end_hook: Callable = None
+    ) -> RunContext:
         try:
-            return asyncio.run(self.run_async(input=input, input_filter=input_filter))
+            return asyncio.run(
+                self.run_async(
+                    input=input,
+                    input_hook=input_hook,
+                    iteration_end_hook=iteration_end_hook
+                )
+            )
         except Exception as e:
             raise
 

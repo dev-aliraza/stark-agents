@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
 class Stream:
@@ -9,10 +9,10 @@ class Stream:
     ITER_END: str = "ITERATION_END"
     AGENT_RUN_END: str = "AGENT_RUN_END"
 
-    # Provider Stream
+    # Model Stream
     CONTENT_CHUNK: str = "CONTENT_CHUNK"
     TOOL_CALLS: str = "TOOL_CALLS"
-    PROVIDER_STREAM_COMPLETED: str = "PROVIDER_STREAM_COMPLETED"
+    MODEL_STREAM_COMPLETED: str = "MODEL_STREAM_COMPLETED"
 
     @classmethod
     def event(cls, type: str, data: Any, data_type: str = "none") -> 'Stream.Event':
@@ -23,16 +23,28 @@ class Stream:
         data: Any
         data_type: str = "none"
 
+class ToolCall(BaseModel):
+    id: str
+    type: str
+    function: Dict[str, Any]
+
+class ModelOutput(BaseModel):
+    role: str = ""
+    content: str = ""
+    tool_calls: List[ToolCall] = []
+
 class ProviderResponse(BaseModel):
     content: str
     tool_calls: List
     message: Dict[str, Any]
 
-class RunResponse(BaseModel):
-    result: List[Dict[str, Any]]
+class RunContext(BaseModel):
+    messages: List[Dict[str, Any]]
     iterations: int
-    sub_agent_result: List[Dict[str, Any]] = []
-    sub_agents_response: Dict[str, Any] = {}
+    output: str = ""
+    subagents_messages: Dict[str, List] = {}
+    subagents_response: Dict[str, Any] = {}
+    error: Optional[str] = None
     max_iterations_reached: bool = False
 
 class IterationData(BaseModel):

@@ -1,9 +1,9 @@
-import logging, json, inspect, functools, re
-from typing import List, Dict, Any, get_type_hints, get_origin, get_args
+import logging, json, inspect, functools, re, copy
+from typing import List, Dict, get_type_hints, get_origin, get_args
 from .mcp import MCPManager
 from .function import FunctionToolManager
 from .agent import Agent, SubAgentManager
-from .type import ToolCallResponse, RunResponse
+from .type import ToolCallResponse, RunContext, ToolCall
 from .llm_providers import OPENAI, ANTHROPIC
 
 def stark_tool(func):
@@ -95,9 +95,10 @@ class Tool:
         self.runner = runner
         self.mcp_manager = None
         self.ft_manager = None
-        self.sub_agent_manager = None
+        self.subagent_manager = None
         self.tools = []
-        self.sub_agents_response = {}
+        self.subagents_response = {}
+        self.subagents_messages = []
         self.agent = None
 
     async def init_tools(self, agent: Agent):
@@ -113,8 +114,8 @@ class Tool:
             self.ft_manager = FunctionToolManager(function_tools)
             self.tools = self.tools + self.ft_manager.get_tools()
         if sub_agents:
-            self.sub_agent_manager = SubAgentManager(sub_agents)
-            self.tools = self.tools + self.sub_agent_manager.get_agents_as_tools()
+            self.subagent_manager = SubAgentManager(sub_agents)
+            self.tools = self.tools + self.subagent_manager.get_agents_as_tools()
         if enable_web_search:
             if agent.get_llm_provider() == OPENAI:
                 self.tools.append({"type": "web_search_preview"})
@@ -129,8 +130,11 @@ class Tool:
         if self.mcp_manager:
             await self.mcp_manager.close_all_sessions()
     
-    def get_sub_agents_response(self) -> Dict:
-        return self.sub_agents_response
+    def get_subagents_messages(self) -> Dict :
+        return self.subagents_messages
+
+    def get_subagents_response(self) -> Dict:
+        return self.subagents_response
     
     async def __is_tool_approved(self, tool_name: str, arguments: Dict) -> bool:
         approvals = self.agent.get_approvals()
@@ -157,24 +161,26 @@ class Tool:
             return False
 
     async def tool_calls(
-        self, ai_tool_calls,
-        messages: List[Dict[str, Any]] = [{}]
+        self,
+        ai_tool_calls: List[ToolCall],
+        runner_context: RunContext = None
     ) -> List[ToolCallResponse]:
         tool_responses: List[ToolCallResponse] = []
         for ai_tool_call in ai_tool_calls:
-            tool_responses.append(await self.__call(ai_tool_call, messages))
+            tool_responses.append(await self.__call(ai_tool_call, runner_context))
         return tool_responses
 
     async def __call(
-        self, ai_tool_call: Dict,
-        messages: List[Dict[str, Any]] = [{}]
+        self,
+        ai_tool_call: ToolCall,
+        runner_context: RunContext = None
     ) -> ToolCallResponse:
-        tool_name: str = ai_tool_call["function"]["name"]
-        tool_call_id = ai_tool_call["id"]
+        tool_name: str = ai_tool_call.function["name"]
+        tool_call_id = ai_tool_call.id
         tool_result = None
 
         try:
-            arguments = json.loads(ai_tool_call["function"]["arguments"])
+            arguments = json.loads(ai_tool_call.function["arguments"])
         except json.JSONDecodeError as e:
             logging.error(f"Failed to parse arguments for {tool_name}: {e}")
             arguments = {}
@@ -244,18 +250,18 @@ class Tool:
             if not isinstance(tool_result, str):
                 tool_result = str(tool_result)
 
-        if self.sub_agent_manager and self.sub_agent_manager.is_agent(tool_name):
-            tool_result: RunResponse = await self.sub_agent_manager.execute(self.runner, tool_name, messages)
-            self.sub_agents_response.update({tool_name.removeprefix("sub_agent__"): tool_result.sub_agent_result})
-            if tool_result.sub_agent_result:
-                tool_result = tool_result.sub_agent_result[-1]
-                if isinstance(tool_result, dict) and "content" in tool_result:
-                    tool_result = tool_result["content"]
+        if self.subagent_manager and self.subagent_manager.is_agent(tool_name) and runner_context.messages:
+            subagent_repsonse: RunContext = await self.subagent_manager.execute(self.runner, tool_name, copy.deepcopy(runner_context.messages))
+            runner_context.subagents_messages[tool_name.removeprefix("sub_agent__")] = subagent_repsonse.messages
+            if subagent_repsonse.output:
+                tool_result = subagent_repsonse.output
             else:
                 tool_result = "Sub-Agent executed successfully (no output returned)"
-            
+
             logging.info(tool_result)
             if not isinstance(tool_result, str):
                 tool_result = str(tool_result)
+            
+            runner_context.subagents_response[tool_name.removeprefix("sub_agent__")] = tool_result
 
         return ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result)
