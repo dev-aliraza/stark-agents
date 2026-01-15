@@ -4,14 +4,16 @@ from .llm_providers import OPENAI
 class Agent():
     def __init__(self,
         name: str,
-        instructions: str,
         model: str,
-        description: str = "",
+        instructions: Optional[str] = None,
+        description: Optional[str] = None,
         mcp_servers: Optional[Dict[str, Any]] = [],
         function_tools: Optional[List[Callable]] = [],
         enable_web_search: Optional[bool] = False,
         sub_agents: Optional[List['Agent']] = [],
         approvals: Optional[Dict[str, Callable]]= None, # This can be use to approve tools and sub agents
+        skills: Optional[List[str]] = None,
+        skill_model: Optional[str] = None,
         parallel_tool_calls: Optional[bool] = None,
         llm_provider: Optional[str] = OPENAI,
         max_iterations: Optional[int] = 10,
@@ -19,14 +21,16 @@ class Agent():
         trace_id: Optional[str] = None
     ):
         self.name = name
-        self.instructions = instructions
         self.model = model
+        self.instructions = instructions
         self.description = description
         self.mcp_servers = mcp_servers
         self.function_tools = function_tools
         self.enable_web_search = enable_web_search
         self.sub_agents = sub_agents
         self.approvals = approvals
+        self.skills = skills
+        self.skill_model = skill_model
         self.parallel_tool_calls = parallel_tool_calls
         self.llm_provider = llm_provider
         self.max_iterations = max_iterations
@@ -36,13 +40,13 @@ class Agent():
     def get_name(self) -> str:
         return self.name
     
-    def get_instructions(self) -> str:
-        return self.instructions
-    
     def get_model(self) -> str:
         return self.model
     
-    def get_description(self) -> str:
+    def get_instructions(self) -> Optional[str]:
+        return self.instructions
+
+    def get_description(self) -> Optional[str]:
         return self.description
     
     def get_mcp_servers(self) -> Optional[Dict[str, Any]]:
@@ -59,6 +63,12 @@ class Agent():
     
     def get_approvals(self) -> Optional[Dict[str, Callable]]:
         return self.approvals
+    
+    def get_skills(self) -> Optional[List[str]]:
+        return self.skills
+    
+    def get_skill_model(self) -> Optional[str]:
+        return self.skill_model
     
     def get_parallel_tool_calls(self) -> Optional[bool]:
         return self.parallel_tool_calls
@@ -110,5 +120,9 @@ class SubAgentManager():
 
     async def execute(self, runner_instance, agent_name, input: List[Dict[str, Any]]):
         agent = self.agent_name_map[agent_name]
+        return await self.subagent_execution(runner_instance, agent, input)
+    
+    @classmethod
+    async def subagent_execution(cls, runner_instance, agent: Agent, input: List[Dict[str, Any]]):
         input.pop()
         return await runner_instance.run_sub_agent(agent, input)

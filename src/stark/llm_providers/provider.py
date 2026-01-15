@@ -4,7 +4,6 @@ from ..type import Stream, ModelOutput
 
 OPENAI = "openai"
 ANTHROPIC = "anthropic"
-VERTEX_AI = "vertex_ai"
 
 class ProviderSream:
     

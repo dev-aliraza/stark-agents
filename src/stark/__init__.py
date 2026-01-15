@@ -1,6 +1,6 @@
 from .agent import Agent
 from .runner import Runner, RunnerStream
-from .tool import stark_tool
+from .stark_tool import stark_tool
 from .type import (
     RunContext, Stream, IterationData, ToolCallResponse
 )

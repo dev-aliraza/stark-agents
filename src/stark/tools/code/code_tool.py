@@ -1,7 +1,7 @@
 import subprocess, shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from ...tool import stark_tool
+from ...stark_tool import stark_tool
 from .utils import generate_diff, get_full_path
 
 class CodeTool:
@@ -32,7 +32,7 @@ class CodeTool:
     @stark_tool
     def shell_exec(self, cmd: str, dir_path: Optional[str] = None, timeout: int = 30) -> str:
         """
-        Execute a shell command with user approval.
+        Execute a shell command. Use to to execute any shell command.
         
         Args:
             cmd: Shell command to execute (string format)
@@ -48,6 +48,7 @@ class CodeTool:
             # Execute command
             result = subprocess.run(
                 cmd,
+                input='\n',
                 shell=True,
                 cwd=str(exec_dir),
                 capture_output=True,
@@ -73,7 +74,7 @@ class CodeTool:
     @stark_tool
     def write(self, path: str, content: str, create_dirs: bool = True) -> str:
         """
-        Write content to a file with user approval.
+        Write content to a file.
         
         Args:
             path: File path (relative to workspace or absolute)

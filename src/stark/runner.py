@@ -7,7 +7,6 @@ from .tool import Tool
 from .type import (
     Stream, RunContext, ToolCallResponse, IterationData, ModelOutput
 )
-from .util import Util
 
 class RunnerStream:
 
@@ -51,6 +50,12 @@ class Runner():
         self.is_sub_agent = False
     
     def __set_agent_instructions(self, messages: List[Dict], system_prompt: str):
+        if self.tool.has_skils():
+            system_prompt = f"""Don't generate any arguments for the tools start with `skill___`
+---
+{(system_prompt or "")}
+"""
+
         if not system_prompt:
             return messages
         

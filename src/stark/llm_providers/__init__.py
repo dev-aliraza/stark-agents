@@ -1,9 +1,8 @@
 from .provider import (
-    OPENAI, ANTHROPIC, VERTEX_AI
+    OPENAI, ANTHROPIC
 )
 
 __all__ = [
     "OPENAI",
-    "ANTHROPIC",
-    "VERTEX_AI"
+    "ANTHROPIC"
 ]
