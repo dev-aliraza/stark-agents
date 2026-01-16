@@ -50,7 +50,7 @@ class Runner():
         self.is_sub_agent = False
     
     def __set_agent_instructions(self, messages: List[Dict], system_prompt: str):
-        if self.tool.has_skils():
+        if self.tool.has_skills():
             system_prompt = f"""Don't generate any arguments for the tools start with `skill___`
 ---
 {(system_prompt or "")}

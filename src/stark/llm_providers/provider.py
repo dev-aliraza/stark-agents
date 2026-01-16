@@ -4,6 +4,7 @@ from ..type import Stream, ModelOutput
 
 OPENAI = "openai"
 ANTHROPIC = "anthropic"
+GEMINI="gemini"
 
 class ProviderSream:
     

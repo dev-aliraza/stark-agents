@@ -73,12 +73,17 @@ def stark_tool(func):
     wrapper.tool_def = {
         "name": tool_name,
         "description": tool_description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required_fields
-        }
     }
+    if properties:
+        wrapper.tool_def.update({
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+            }
+        })
+
+    if properties and required_fields:
+        wrapper.tool_def["parameters"]["required"] = required_fields
     
     # helper method to get the JSON easily
     wrapper.get_json_schema = lambda: json.dumps(wrapper.tool_def, indent=2)

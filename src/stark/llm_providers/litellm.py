@@ -13,7 +13,7 @@ class LiteLLM(LLMProvider):
         metadata: Dict[str, Any] = {}
         if "trace_id" in kwargs:
             metadata["trace_id"] = kwargs.pop("trace_id")
-        #litellm.set_verbose=True
+
         return await litellm.acompletion(
             model=model,
             messages=messages,

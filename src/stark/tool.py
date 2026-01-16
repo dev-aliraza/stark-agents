@@ -5,7 +5,7 @@ from .function import FunctionToolManager
 from .skill import Skill
 from .agent import Agent, SubAgentManager
 from .type import ToolCallResponse, RunContext, ToolCall
-from .llm_providers import OPENAI, ANTHROPIC
+from .llm_providers import OPENAI, ANTHROPIC, GEMINI
 
 class Tool:
     def __init__(self, runner):
@@ -43,12 +43,14 @@ class Tool:
                 self.tools.append({"type": "web_search_preview"})
             elif agent.get_llm_provider() == ANTHROPIC:
                 self.tools.append({"type": "web_search_20250305", "name": "web_search", "max_uses": 5})
+            elif agent.get_llm_provider() == GEMINI:
+                self.tools.append({"googleSearch": {}})
         return self
 
     def get_tools(self) -> List[Dict]:
         return self.tools
     
-    def has_skils(self) -> bool:
+    def has_skills(self) -> bool:
         return True if self.skill else False
 
     async def close_mcp_manager(self):

@@ -96,12 +96,7 @@ class SubAgentManager():
         for agent in self.agents:
             toof_def = {
                 "name": "sub_agent__" + agent.get_name(),
-                "description": agent.get_description(),
-                "parameters": {
-                    "properties": {},
-                    "required": [],
-                    "type": "object"
-                }
+                "description": agent.get_description()
             }
             tools.append({
                 "type": "function",

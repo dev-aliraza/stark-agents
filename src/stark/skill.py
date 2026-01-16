@@ -88,12 +88,7 @@ class Skill:
                             "type": "function",
                             "function": {
                                 "name": skill_name,
-                                "description": skill_data["description"],
-                                "parameters": {
-                                    "properties": {},
-                                    "required": [],
-                                    "type": "object"
-                                }
+                                "description": skill_data["description"]
                             }
                         })
                         self.skills[skill_name] = {
