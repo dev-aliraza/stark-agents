@@ -31,6 +31,9 @@ class LiteLLM(LLMProvider):
         if hasattr(response, "choices") and len(response.choices) > 0:
             res = response.choices[0].message
 
+            if hasattr(res, "thinking_blocks") and res.thinking_blocks:
+                model_output.thinking_blocks = res.thinking_blocks
+
             if hasattr(res, "content") and res.content:
                 model_output.content += res.content
 
@@ -53,10 +56,23 @@ class LiteLLM(LLMProvider):
     
     async def stream_response(self, response) -> AsyncIterator[Stream.Event]:
         model_output = ModelOutput(role="assistant")
-
+        reasoning_content = ""
+        signature = ""
         async for chunk in response:
             if hasattr(chunk, "choices") and len(chunk.choices) > 0:
                 delta = chunk.choices[0].delta
+
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_content += delta.reasoning_content
+                    yield ProviderSream.reasoning_chunk(delta.reasoning_content)
+
+                if (hasattr(delta, "thinking_blocks") 
+                    and delta.thinking_blocks
+                    and len(delta.thinking_blocks) > 0
+                ):
+                    latest_index = len(delta.thinking_blocks) - 1
+                    if delta.thinking_blocks[latest_index].get("signature", ""):
+                        signature = delta.thinking_blocks[latest_index].get("signature")
 
                 if hasattr(delta, "content") and delta.content:
                     model_output.content += delta.content
@@ -82,9 +98,18 @@ class LiteLLM(LLMProvider):
                                 model_output.tool_calls[tool_call.index].function[
                                     "arguments"
                                 ] += tool_call.function.arguments
-                    
+
                     # Yield tool calls update
                     yield ProviderSream.tool_calls(model_output.tool_calls)
+
+        if reasoning_content:
+            thinking_block = {
+                "type": "thinking",
+                "thinking": reasoning_content,
+            }
+            if signature:
+                thinking_block["signature"] = signature
+            model_output.thinking_blocks.append(thinking_block)
 
         # Yield final complete response
         yield ProviderSream.model_stream_completed(model_output)

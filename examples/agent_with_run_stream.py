@@ -20,34 +20,6 @@ MCP_SERVER = {
     }
 }
 
-def stark_search(input: str):
-    """
-    {
-        "description": "This function will search the stark logs",
-        "parameters": {
-            "properties": {
-                "query": {
-                    "description": "Query send by user to search in stark logs",
-                    "title": "User Query",
-                    "type": "string"
-                }
-            },
-            "required": [
-                "query"
-            ],
-            "type": "object"
-        }
-    }
-    """
-    try:
-        if isinstance(input, str):
-            input = json.loads(input)
-        if "query" in input:
-            return json.dumps({"result": "This is a mock function with Query"})
-        return json.dumps({"result": "This is a mock function without Query"})
-    except Exception as e:
-        return f"Exception in calling the function: {str(e)}"
-
 async def main_async():
     user_query = "Stark AI is not working"
     ticket_classification = "stark_issue"
@@ -67,7 +39,6 @@ You are an expert Assistant. Your role is to manage Jira Tickets and search star
     1.5. Labels: type::{ticket_classification}
 2. Transition issue to 'In-Progress' status
 3. Send ticket `issue_key` to slack channel: `{slack_channel}`
-4. Search stark logs using following user query: {user_query}
 
 ### Rules
 1. Don't output anything else other than the JSON string.
@@ -83,8 +54,7 @@ You are an expert Assistant. Your role is to manage Jira Tickets and search star
             name="Jira-Support",
             instructions=instructions,
             model="claude-sonnet-4-5",
-            mcp_servers=MCP_SERVER,
-            function_tools=[stark_search]
+            mcp_servers=MCP_SERVER
         )
 
         result = Runner(agent).run_stream(input=[{ "role": "user", "content": user_query }])

@@ -115,6 +115,7 @@ class Runner():
                 tools=self.tool.get_tools(),
                 stream=stream,
                 parallel_tool_calls = self.agent.get_parallel_tool_calls(),
+                reasoning_effort = self.agent.get_thinking_level(),
                 max_tokens=self.agent.get_max_output_tokens(),
                 trace_id=self.agent.get_trace_id()
             )

@@ -10,6 +10,7 @@ class Stream:
     AGENT_RUN_END: str = "AGENT_RUN_END"
 
     # Model Stream
+    REASONING_CHUNK: str = "REASONING_CHUNK"
     CONTENT_CHUNK: str = "CONTENT_CHUNK"
     TOOL_CALLS: str = "TOOL_CALLS"
     MODEL_STREAM_COMPLETED: str = "MODEL_STREAM_COMPLETED"
@@ -32,6 +33,7 @@ class ModelOutput(BaseModel):
     role: str = ""
     content: str = ""
     tool_calls: List[ToolCall] = []
+    thinking_blocks: List[Dict] = []
 
 class ProviderResponse(BaseModel):
     content: str

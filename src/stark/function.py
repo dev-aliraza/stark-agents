@@ -7,16 +7,16 @@ class FunctionToolManager:
         self.func_name_map = {}
         self.tools = self.__load_tools()
 
-    def __is_instance(self, obj):
+    def __is_class_instance(self, obj):
         # Returns True for instances of user-defined classes
         # Returns False for built-in types (int, list, str, function, etc.) or classes themselves
-        return hasattr(obj, '__dict__') and not isinstance(obj, type)
+        return hasattr(obj, '__class__') and not callable(obj) and not isinstance(obj, type)
 
     def __load_tools(self) -> List[Dict]:
         tools = []
         class_instance = None
         for function_tool in self.function_tools:
-            if self.__is_instance(function_tool):
+            if self.__is_class_instance(function_tool):
                 class_instance = function_tool
                 function_tool = function_tool.__class__
 
@@ -39,7 +39,7 @@ class FunctionToolManager:
                             "class_instance": class_instance
                         }
 
-            if (inspect.isfunction(function_tool) or inspect.ismethod(function_tool)) and callable(function_tool):
+            elif (inspect.isfunction(function_tool) or inspect.ismethod(function_tool)) and callable(function_tool):
                 if hasattr(function_tool, 'get_json_schema'):
                     tool_func_def = json.loads(function_tool.get_json_schema())
                     tool_func_def["name"] = "st___" + tool_func_def["name"]
@@ -51,6 +51,7 @@ class FunctionToolManager:
                         "type": "function",
                         "function": function_tool
                     }
+                
         return tools
     
     def get_tools(self) -> List[Dict]:

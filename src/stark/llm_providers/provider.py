@@ -7,7 +7,11 @@ ANTHROPIC = "anthropic"
 GEMINI="gemini"
 
 class ProviderSream:
-    
+
+    @classmethod
+    def reasoning_chunk(cls, data: str) -> Stream.Event:
+        return Stream.event(type=Stream.REASONING_CHUNK, data=data, data_type="str")
+
     @classmethod
     def content_chunk(cls, data: str) -> Stream.Event:
         return Stream.event(type=Stream.CONTENT_CHUNK, data=data, data_type="str")

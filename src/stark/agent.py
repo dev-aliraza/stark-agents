@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Literal
 from .llm_providers import OPENAI
 
 class Agent():
@@ -15,6 +15,7 @@ class Agent():
         skills: Optional[List[str]] = None,
         skill_model: Optional[str] = None,
         parallel_tool_calls: Optional[bool] = None,
+        thinking_level: Optional[str] = None, #["none", "low", "medium", "high"]
         llm_provider: Optional[str] = OPENAI,
         max_iterations: Optional[int] = 10,
         max_output_tokens: Optional[int] = None,
@@ -32,6 +33,7 @@ class Agent():
         self.skills = skills
         self.skill_model = skill_model
         self.parallel_tool_calls = parallel_tool_calls
+        self.thinking_level = thinking_level
         self.llm_provider = llm_provider
         self.max_iterations = max_iterations
         self.max_output_tokens = max_output_tokens
@@ -72,6 +74,9 @@ class Agent():
     
     def get_parallel_tool_calls(self) -> Optional[bool]:
         return self.parallel_tool_calls
+    
+    def get_thinking_level(self) -> Optional[str]:
+        return self.thinking_level
     
     def get_llm_provider(self) -> Optional[str]:
         return self.llm_provider
