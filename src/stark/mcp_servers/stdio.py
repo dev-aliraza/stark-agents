@@ -13,19 +13,30 @@ class StdioMCP():
         self.sessions: ClientSession = None
         self._exit_stack = AsyncExitStack()
 
-    def __format_tools_for_input(self, tools: List[Tool]) -> List:
+    def __tool_def(self, tool: Tool):
+        tool_def = {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description or ""
+            }
+        }
+        if tool.inputSchema:
+            tool_def["function"]["parameters"] = tool.inputSchema
+        return tool_def
+
+
+    def __format_tools_for_input(self, tools: List[Tool], include: List[str], exclude: List[str]) -> List:
         tools_output: List[Any] = []
         for tool in tools:
-            tools_output.append({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "parameters": tool.inputSchema
-                    if hasattr(tool, "inputSchema")
-                    else {"type": "object", "properties": {}},
-                },
-            })
+            if include and tool.name in include:
+                tools_output.append(self.__tool_def(tool))
+            
+            if not include and exclude and tool.name not in exclude:
+                tools_output.append(self.__tool_def(tool))
+            
+            if not include and not exclude:
+                tools_output.append(self.__tool_def(tool))
         return tools_output
 
     async def connect_server(self, name:str, config: Dict[str, Any], _exit_stack: AsyncExitStack):
@@ -39,6 +50,8 @@ class StdioMCP():
         command = config.get("command")
         args = config.get("args", [])
         env = config.get("env", None)
+        include = config.get("include", [])
+        exclude = config.get("exclude", [])
 
         # Check if command exists (e.g., 'python', 'npx')
         if not shutil.which(command):
@@ -68,7 +81,7 @@ class StdioMCP():
             await session.initialize()
 
             # 4. List tools
-            self.tools = self.__format_tools_for_input((await session.list_tools()).tools)
+            self.tools = self.__format_tools_for_input((await session.list_tools()).tools, include, exclude)
             self.session = session
 
             print(f"✅ {name} connected and initialized.")
