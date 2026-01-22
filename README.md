@@ -4,7 +4,7 @@ A powerful Python SDK for building AI agents with support for MCP servers, funct
 
 ## Features
 
-- 🤖 **Multi-LLM Support**: Built-in support for OpenAI and Anthropic via LiteLLM
+- 🤖 **Multi-LLM Support**: Built-in support for OpenAI, Anthropic, and Gemini via LiteLLM
 - 🔧 **MCP Server Integration**: Connect to Model Context Protocol (MCP) servers for extended capabilities
 - 🛠️ **Function Tools**: Define custom Python functions or classes as tools with automatic schema generation
 - 🌳 **Hierarchical Agents**: Create complex agent hierarchies with sub-agents
@@ -14,6 +14,8 @@ A powerful Python SDK for building AI agents with support for MCP servers, funct
 - 🔍 **Web Search**: Built-in web search capabilities for OpenAI and Anthropic models
 - ✅ **Tool Approvals**: Optional approval system for tool and sub-agent execution
 - 🎯 **Input Filtering**: Custom input filtering before LLM calls
+- 🧠 **Skills System**: Load reusable capabilities from markdown files
+- 💭 **Reasoning Models**: Support for thinking/reasoning models (e.g., O1, Claude 3.5 Sonnet)
 - 📝 **Tracing**: Built-in trace ID support for debugging and monitoring
 
 ## Installation
@@ -154,6 +156,62 @@ result = Runner(agent).run(
 )
 ```
 
+### Skills System
+
+Stark supports a unique "Skills" system where you can define reusable agent capabilities using markdown files.
+
+#### Directory Structure
+
+Create a `skills` directory with subdirectories for each skill:
+
+```
+skills/
+  ├── python_expert/
+  │   └── SKILL.md
+  └── data_analyst/
+      └── SKILL.md
+```
+
+#### The SKILL.md Format
+
+Each skill is defined in a `SKILL.md` file with YAML frontmatter:
+
+```markdown
+---
+name: python_expert
+description: A skill that provides Python programming expertise
+---
+
+You are an expert Python programmer. You follow PEP 8 standards.
+When writing code, always include type hints and docstrings.
+```
+
+#### Loading Skills
+
+```python
+from stark import Agent, Runner
+
+agent = Agent(
+    name="Dev-Agent",
+    instructions="You are a senior developer.",
+    model="claude-sonnet-4-5",
+    skills=["./skills/python_expert"]  # Path to the skill folder
+)
+```
+
+### Reasoning Models
+
+Stark supports reasoning (or "thinking") models like OpenAI's O1 series. You can control the reasoning effort:
+
+```python
+agent = Agent(
+    name="Thinking-Agent",
+    instructions="Solve this complex logic puzzle",
+    model="o1",
+    thinking_level="high"  # Options: "none", "low", "medium", "high"
+)
+```
+
 ### Hierarchical Sub-Agents
 
 ```python
@@ -235,7 +293,7 @@ Enable web search capabilities for your agents:
 
 ```python
 from stark import Agent, Runner
-from stark.llm_providers import OPENAI, ANTHROPIC
+from stark.llm_providers import OPENAI, ANTHROPIC, GEMINI
 
 # OpenAI web search
 openai_agent = Agent(
@@ -252,6 +310,15 @@ anthropic_agent = Agent(
     instructions="You can search the web for information",
     model="claude-sonnet-4-5",
     llm_provider=ANTHROPIC,
+    enable_web_search=True
+)
+
+# Gemini web search
+gemini_agent = Agent(
+    name="Research-Agent",
+    instructions="You can search the web for information",
+    model="gemini-1.5-pro",
+    llm_provider=GEMINI,
     enable_web_search=True
 )
 
@@ -339,8 +406,11 @@ Agent(
     enable_web_search: bool = False,             # Enable web search capabilities
     sub_agents: List[Agent] = [],                # Sub-agents for delegation
     approvals: Dict[str, Callable] = None,       # Tool approval functions (regex patterns)
+    skills: List[str] = None,                    # List of paths to skill directories
+    skill_model: str = None,                     # Model to use for skill execution (defaults to main model)
     parallel_tool_calls: bool = None,            # Enable parallel tool execution
-    llm_provider: str = OPENAI,                  # LLM provider (OPENAI or ANTHROPIC)
+    thinking_level: str = None,                  # Reasoning effort: "none", "low", "medium", "high"
+    llm_provider: str = OPENAI,                  # LLM provider (OPENAI, ANTHROPIC, GEMINI)
     max_iterations: int = 10,                    # Maximum iterations before stopping
     max_output_tokens: int = None,               # Maximum tokens in response
     trace_id: str = None                         # Trace ID for debugging
@@ -578,7 +648,7 @@ code_tool = CodeTool(workspace_dir="./project")
 
 ```python
 from stark import Agent, Runner
-from stark.llm_providers import OPENAI, ANTHROPIC
+from stark.llm_providers import OPENAI, ANTHROPIC, GEMINI
 
 # OpenAI
 openai_agent = Agent(
@@ -594,6 +664,14 @@ anthropic_agent = Agent(
     instructions="You are a helpful assistant",
     model="claude-sonnet-4-5",
     llm_provider=ANTHROPIC
+)
+
+# Gemini
+gemini_agent = Agent(
+    name="Gemini-Agent",
+    instructions="You are a helpful assistant",
+    model="gemini-1.5-pro",
+    llm_provider=GEMINI
 )
 ```
 
