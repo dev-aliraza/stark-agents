@@ -35,7 +35,7 @@ class logger:
         print(f"{stark_logo}{timestamp}{cls.GREEN}[INFO]{cls.RESET} {message}")
 
     @classmethod
-    def warn(cls, message):
+    def warning(cls, message):
         """Log a warning message in Yellow."""
         timestamp = cls._get_timestamp()
         stark_logo = cls._stark_logo()

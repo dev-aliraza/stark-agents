@@ -4,6 +4,7 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import Tool
+from ..logger import logger
 
 class StdioMCP():
     """
@@ -55,10 +56,10 @@ class StdioMCP():
 
         # Check if command exists (e.g., 'python', 'npx')
         if not shutil.which(command):
-            print(f"⚠️  Warning: Command '{command}' not found. Skipping {name}.")
+            logger.error(f"⚠️  Warning: Command '{command}' not found. Skipping {name}.")
             return None
 
-        print(f"🔌 Connecting to {name} via {command}...")
+        logger.info(f"🔌 Connecting to {name} via {command}...")
 
         server_params = StdioServerParameters(
             command=command,
@@ -84,11 +85,11 @@ class StdioMCP():
             self.tools = self.__format_tools_for_input((await session.list_tools()).tools, include, exclude)
             self.session = session
 
-            print(f"✅ {name} connected and initialized.")
+            logger.success(f"✅ {name} connected and initialized.")
             return _exit_stack
 
         except Exception as e:
-            print(f"❌ Failed to connect to {name}: {e}")
+            logger.error(f"❌ Failed to connect to {name}: {e}")
             # Clean up on error
             raise
 

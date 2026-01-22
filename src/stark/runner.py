@@ -1,4 +1,4 @@
-import logging, json, asyncio, sys
+import json, asyncio, sys
 from typing import List, Dict, Any, Callable, AsyncIterator
 from .agent import Agent
 from .llm import init_llm
@@ -7,6 +7,7 @@ from .tool import Tool
 from .type import (
     Stream, RunContext, ToolCallResponse, IterationData, ModelOutput
 )
+from .logger import logger
 
 class RunnerStream:
 
@@ -139,14 +140,14 @@ class Runner():
                 has_tool_calls=bool(model_output.tool_calls)
             )
 
-            logging.info(
+            logger.info(
                 f"Iteration {run_context.iterations}: Received response - "
                 f"content length: {len(model_output.content)} chars, tool_calls: {len(model_output.tool_calls)}"
             )
 
             # If no tools return by LLM means agent is done working
             if not model_output.tool_calls:
-                logging.info(f"No tool calls made. Agent finished after {run_context.iterations} iterations.")
+                logger.info(f"No tool calls made. Agent finished after {run_context.iterations} iterations.")
                 if self.stream:
                     yield RunnerStream.iteration_end(iteration_data, type_prefix=self.stream_type_prefix)
                 yield await self.__execution_response(run_context); return

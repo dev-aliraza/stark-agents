@@ -1,4 +1,4 @@
-import logging, json, inspect, re, copy
+import json, inspect, re, copy
 from typing import List, Dict, AsyncIterator, Any
 from .mcp import MCPManager
 from .function import FunctionToolManager
@@ -6,6 +6,7 @@ from .skill import Skill
 from .agent import Agent, SubAgentManager
 from .type import ToolCallResponse, RunContext, ToolCall, Stream
 from .llm_providers import OPENAI, ANTHROPIC, GEMINI
+from .logger import logger
 
 class Tool:
     def __init__(self, runner):
@@ -74,7 +75,7 @@ class Tool:
             return True
         
         if len(tool_for_approval) > 1:
-            print("===== According to regex search, multiple tools are found for approval =====")
+            logger.error("===== According to regex search, multiple tools are found for approval =====")
             return False
         
         try:
@@ -85,7 +86,7 @@ class Tool:
             else:
                 return approval_func(**args)
         except Exception as e:
-            print(f"Exception Occur: {str(e)}")
+            logger.error(f"Exception Occur: {str(e)}")
             return False
 
     async def tool_calls(
@@ -114,16 +115,12 @@ class Tool:
         try:
             arguments = json.loads(ai_tool_call.function["arguments"])
         except json.JSONDecodeError as e:
-            logging.error(f"Failed to parse arguments for {tool_name}: {e}")
+            logger.error(f"Failed to parse arguments for {tool_name}: {e}")
             arguments = {}
 
         if (self.mcp_manager and self.mcp_manager.is_mcp_tool(tool_name)) and (self.ft_manager and self.ft_manager.is_function_tool(tool_name)):
             tool_result = f"Tool name ({tool_name}) didn't execute because same tool exist in one of the MCP servers and in one of the function tools"
             yield ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result); return
-
-        logging.info(f"🔧 Tool request: {tool_call_id}")
-        logging.info(f"🔧 Tool name: {tool_name}")
-        logging.info(f"🔧 Tool Args: {arguments}")
 
         if not (await self.__is_tool_approved(tool_name, arguments)):
             tool_result = f"Tool name ({tool_name}) didn't execute because the approval got rejected by the user. Just respond that the action to {{ Add Action Name }} was not approved by user and no additional information or question"
@@ -174,15 +171,14 @@ class Tool:
                 
             # Check if result is an error from wrong server
             if tool_result and "Unknown tool:" in tool_result:
-                logging.warning(
+                logger.warning(
                     f"Tool {tool_name} not available"
                     f"trying next server"
                 )
 
-            logging.info(f"Tool {tool_name} result length: {len(tool_result)} chars")
         except Exception as e:
             tool_error = str(e)
-            logging.info(
+            logger.info(
                 f"Tool {tool_name} raised exception: {e}"
             )
 
@@ -194,12 +190,12 @@ class Tool:
                     if not tool_error
                     else f"Tool error: {tool_error}"
                 )
-                logging.error(f"Failed to execute {tool_name}: {error_msg}")
+                logger.error(f"Failed to execute {tool_name}: {error_msg}")
                 tool_result = json.dumps({"error": error_msg})
             else:
                 # Empty result - provide a default message
                 tool_result = "Tool executed successfully (no output returned)"
-                logging.warning(f"Tool {tool_name} returned empty result")
+                logger.warning(f"Tool {tool_name} returned empty result")
 
         tool_result = tool_result if isinstance(tool_result, str) else json.dumps(tool_result)
         if not tool_result.strip():
@@ -243,7 +239,6 @@ class Tool:
         else:
             tool_result = "Sub-Agent executed successfully (no output returned)"
 
-        logging.info(tool_result)
         if not isinstance(tool_result, str):
             tool_result = str(tool_result)
         
@@ -279,8 +274,7 @@ class Tool:
             tool_result = agent_response.output
         else:
             tool_result = "Sub-Agent executed successfully (no output returned)"
-        
-        logging.info(tool_result)
+
         if not isinstance(tool_result, str):
             tool_result = str(tool_result)
         

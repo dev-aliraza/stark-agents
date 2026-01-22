@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 from .agent import Agent
 from .tools import CodeTool
+from .logger import logger
 
 class Skill:
     def __init__(self, agent: Agent):
@@ -97,7 +98,7 @@ class Skill:
                         }
                 except Exception as e:
                     # Log error but continue processing other files
-                    print(f"Exception in {skill_file}: {e}")
+                    logger.error(f"Exception in {skill_file}: {e}")
     
     def get_metadata_as_tools(self) -> List[Dict[str, Any]]:
         return self.metadata_as_tools
