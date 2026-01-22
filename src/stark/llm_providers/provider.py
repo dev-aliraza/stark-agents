@@ -9,20 +9,20 @@ GEMINI="gemini"
 class ProviderSream:
 
     @classmethod
-    def reasoning_chunk(cls, data: str) -> Stream.Event:
-        return Stream.event(type=Stream.REASONING_CHUNK, data=data, data_type="str")
+    def reasoning_chunk(cls, data: str, type_prefix: str = "") -> Stream.Event:
+        return Stream.event(type=type_prefix+Stream.REASONING_CHUNK, data=data, data_type="str")
 
     @classmethod
-    def content_chunk(cls, data: str) -> Stream.Event:
-        return Stream.event(type=Stream.CONTENT_CHUNK, data=data, data_type="str")
+    def content_chunk(cls, data: str, type_prefix: str = "") -> Stream.Event:
+        return Stream.event(type=type_prefix+Stream.CONTENT_CHUNK, data=data, data_type="str")
 
     @classmethod
-    def tool_calls(cls, data: List) -> Stream.Event:
-        return Stream.event(type=Stream.TOOL_CALLS, data=data, data_type="List")
+    def tool_calls(cls, data: List, type_prefix: str = "") -> Stream.Event:
+        return Stream.event(type=type_prefix+Stream.TOOL_CALLS, data=data, data_type="List")
     
     @classmethod
-    def model_stream_completed(cls, data: ModelOutput) -> Stream.Event:
-        return Stream.event(type=Stream.MODEL_STREAM_COMPLETED, data=data, data_type="BaseModel")
+    def model_stream_completed(cls, data: ModelOutput, type_prefix: str = "") -> Stream.Event:
+        return Stream.event(type=type_prefix+Stream.MODEL_STREAM_COMPLETED, data=data, data_type="BaseModel")
 
 class LLMProvider(ABC):
     
@@ -35,5 +35,5 @@ class LLMProvider(ABC):
         return ModelOutput(role="assistant")
 
     @abstractmethod
-    async def stream_response(self, response) -> AsyncIterator[Stream.Event]:
+    async def stream_response(self, response, type_prefix: str = "") -> AsyncIterator[Stream.Event]:
         yield ProviderSream.model_stream_completed(None)

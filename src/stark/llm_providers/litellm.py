@@ -54,7 +54,7 @@ class LiteLLM(LLMProvider):
 
         return model_output
     
-    async def stream_response(self, response) -> AsyncIterator[Stream.Event]:
+    async def stream_response(self, response, type_prefix: str = "") -> AsyncIterator[Stream.Event]:
         model_output = ModelOutput(role="assistant")
         reasoning_content = ""
         signature = ""
@@ -64,7 +64,7 @@ class LiteLLM(LLMProvider):
 
                 if hasattr(delta, "reasoning_content") and delta.reasoning_content:
                     reasoning_content += delta.reasoning_content
-                    yield ProviderSream.reasoning_chunk(delta.reasoning_content)
+                    yield ProviderSream.reasoning_chunk(delta.reasoning_content, type_prefix=type_prefix)
 
                 if (hasattr(delta, "thinking_blocks") 
                     and delta.thinking_blocks
@@ -76,7 +76,7 @@ class LiteLLM(LLMProvider):
 
                 if hasattr(delta, "content") and delta.content:
                     model_output.content += delta.content
-                    yield ProviderSream.content_chunk(delta.content)
+                    yield ProviderSream.content_chunk(delta.content, type_prefix=type_prefix)
 
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
                     for tool_call in delta.tool_calls:
@@ -100,7 +100,7 @@ class LiteLLM(LLMProvider):
                                 ] += tool_call.function.arguments
 
                     # Yield tool calls update
-                    yield ProviderSream.tool_calls(model_output.tool_calls)
+                    yield ProviderSream.tool_calls(model_output.tool_calls, type_prefix)
 
         if reasoning_content:
             thinking_block = {
@@ -112,6 +112,6 @@ class LiteLLM(LLMProvider):
             model_output.thinking_blocks.append(thinking_block)
 
         # Yield final complete response
-        yield ProviderSream.model_stream_completed(model_output)
+        yield ProviderSream.model_stream_completed(model_output, type_prefix); return
 
     

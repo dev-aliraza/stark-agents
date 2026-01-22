@@ -1,15 +1,16 @@
 import logging, json, inspect, re, copy
-from typing import List, Dict
+from typing import List, Dict, AsyncIterator, Any
 from .mcp import MCPManager
 from .function import FunctionToolManager
 from .skill import Skill
 from .agent import Agent, SubAgentManager
-from .type import ToolCallResponse, RunContext, ToolCall
+from .type import ToolCallResponse, RunContext, ToolCall, Stream
 from .llm_providers import OPENAI, ANTHROPIC, GEMINI
 
 class Tool:
     def __init__(self, runner):
         self.runner = runner
+        self.stream = runner.is_stream()
         self.mcp_manager = None
         self.ft_manager = None
         self.subagent_manager = None
@@ -91,17 +92,21 @@ class Tool:
         self,
         ai_tool_calls: List[ToolCall],
         runner_context: RunContext = None
-    ) -> List[ToolCallResponse]:
+    ) -> AsyncIterator[List[ToolCallResponse]] | AsyncIterator[Any]:
         tool_responses: List[ToolCallResponse] = []
         for ai_tool_call in ai_tool_calls:
-            tool_responses.append(await self.__call(ai_tool_call, runner_context))
-        return tool_responses
+            async for tool_call_event in self.__call(ai_tool_call, runner_context):
+                if isinstance(tool_call_event, ToolCallResponse):
+                    tool_responses.append(tool_call_event)
+                else:
+                    yield tool_call_event
+        yield tool_responses; return
 
     async def __call(
         self,
         ai_tool_call: ToolCall,
         runner_context: RunContext = None
-    ) -> ToolCallResponse:
+    ) -> AsyncIterator[ToolCallResponse] | AsyncIterator[Any]:
         tool_name: str = ai_tool_call.function["name"]
         tool_call_id = ai_tool_call.id
         tool_result = None
@@ -114,7 +119,7 @@ class Tool:
 
         if (self.mcp_manager and self.mcp_manager.is_mcp_tool(tool_name)) and (self.ft_manager and self.ft_manager.is_function_tool(tool_name)):
             tool_result = f"Tool name ({tool_name}) didn't execute because same tool exist in one of the MCP servers and in one of the function tools"
-            return ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result)
+            yield ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result); return
 
         logging.info(f"🔧 Tool request: {tool_call_id}")
         logging.info(f"🔧 Tool name: {tool_name}")
@@ -122,7 +127,7 @@ class Tool:
 
         if not (await self.__is_tool_approved(tool_name, arguments)):
             tool_result = f"Tool name ({tool_name}) didn't execute because the approval got rejected by the user. Just respond that the action to {{ Add Action Name }} was not approved by user and no additional information or question"
-            return ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result)
+            yield ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result); return
 
         if self.mcp_manager and self.mcp_manager.is_mcp_tool(tool_name):
             tool_result = await self.__call_mcp_tool(tool_name, arguments)
@@ -131,12 +136,26 @@ class Tool:
             tool_result = await self.__call_function_tool(tool_name, arguments)
 
         elif self.subagent_manager and self.subagent_manager.is_agent(tool_name) and runner_context.messages:
-            tool_result = await self.__call_subagent(tool_name, runner_context)
+            if not self.stream:
+                tool_result = await self.__call_subagent(tool_name, runner_context).__anext__()
+            else:
+                async for subagent_event in self.__call_subagent(tool_name, runner_context):
+                    if isinstance(subagent_event, str):
+                        tool_result = subagent_event
+                    else:
+                        yield subagent_event
 
         elif self.skill and self.skill.is_skill(tool_name) and runner_context.messages:
-            tool_result = await self.__call_skill(tool_name, runner_context)
+            if not self.stream:
+                tool_result = await self.__call_skill(tool_name, runner_context).__anext__()
+            else:
+                async for skill_event in self.__call_skill(tool_name, runner_context):
+                    if isinstance(skill_event, str):
+                        tool_result = skill_event
+                    else:
+                        yield skill_event
 
-        return ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result)
+        yield ToolCallResponse(role="tool", tool_call_id=tool_call_id, content=tool_result); return
     
     async def __call_mcp_tool(self, tool_name: str, arguments) -> str:
         try:
@@ -195,8 +214,29 @@ class Tool:
             
         return tool_result
 
-    async def __call_subagent(self, tool_name: str, runner_context: RunContext) -> str:
-        subagent_repsonse: RunContext = await self.subagent_manager.execute(self.runner, tool_name, copy.deepcopy(runner_context.messages))
+    async def __call_subagent(self, tool_name: str, runner_context: RunContext) -> AsyncIterator[str] | AsyncIterator[Any]:
+        subagent_repsonse: RunContext = None
+        if not self.stream:
+            subagent_repsonse = await self.subagent_manager.execute(
+                self.runner,
+                tool_name,
+                copy.deepcopy(runner_context.messages)
+            ).__anext__()
+        else:
+            stream_type_prefix = "SUBAGENT_"
+            subagent_stream = self.subagent_manager.execute(
+                self.runner,
+                tool_name,
+                copy.deepcopy(runner_context.messages),
+                stream=self.stream,
+                stream_type_prefix=stream_type_prefix
+            )
+            async for stream_event in subagent_stream:
+                if stream_event.type == (stream_type_prefix+Stream.AGENT_RUN_END):
+                    subagent_repsonse = stream_event.data
+                else:
+                    yield stream_event
+
         runner_context.subagents_messages[tool_name.removeprefix("sub_agent__")] = subagent_repsonse.messages
         if subagent_repsonse.output:
             tool_result = subagent_repsonse.output
@@ -209,11 +249,32 @@ class Tool:
         
         runner_context.subagents_response[tool_name.removeprefix("sub_agent__")] = tool_result
             
-        return tool_result
+        yield tool_result; return
     
-    async def __call_skill(self, tool_name: str, runner_context: RunContext) -> str:
+    async def __call_skill(self, tool_name: str, runner_context: RunContext) -> AsyncIterator[str] | AsyncIterator[Any]:
         skill_subagent = self.skill.get_skill_subagent(tool_name)
-        agent_response: RunContext = await SubAgentManager.subagent_execution(self.runner, skill_subagent, copy.deepcopy(runner_context.messages))
+        agent_response: RunContext = None
+        if not self.stream:
+            agent_response = await SubAgentManager.subagent_execution(
+                self.runner,
+                skill_subagent,
+                copy.deepcopy(runner_context.messages)
+            ).__anext__()
+        else:
+            stream_type_prefix = "SKILL_"
+            agent_stream = SubAgentManager.subagent_execution(
+                self.runner,
+                skill_subagent,
+                copy.deepcopy(runner_context.messages),
+                stream=self.stream,
+                stream_type_prefix=stream_type_prefix
+            )
+            async for stream_event in agent_stream:
+                if stream_event.type == (stream_type_prefix+Stream.AGENT_RUN_END):
+                    agent_response = stream_event.data
+                else:
+                    yield stream_event
+
         if agent_response.output:
             tool_result = agent_response.output
         else:
@@ -223,4 +284,4 @@ class Tool:
         if not isinstance(tool_result, str):
             tool_result = str(tool_result)
         
-        return tool_result
+        yield tool_result; return

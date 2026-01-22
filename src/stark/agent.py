@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Callable, Literal
+from typing import Any, Dict, List, Optional, Callable
 from .llm_providers import OPENAI
 
 class Agent():
@@ -118,11 +118,52 @@ class SubAgentManager():
     def get_agents_as_tools(self) -> List[Dict]:
         return self.tools
 
-    async def execute(self, runner_instance, agent_name, input: List[Dict[str, Any]]):
+    async def execute(self,
+        runner_instance,
+        agent_name,
+        input: List[Dict[str, Any]],
+        stream: bool = False,
+        stream_type_prefix: str = ""
+    ):
         agent = self.agent_name_map[agent_name]
-        return await self.subagent_execution(runner_instance, agent, input)
+        if not stream:
+            yield await self.subagent_execution(
+                runner_instance,
+                agent,
+                input,
+                stream
+            ).__anext__(); return
+        async for event in self.subagent_execution(
+            runner_instance,
+            agent,
+            input,
+            stream,
+            stream_type_prefix=stream_type_prefix
+        ):
+            yield event
     
     @classmethod
-    async def subagent_execution(cls, runner_instance, agent: Agent, input: List[Dict[str, Any]]):
+    async def subagent_execution(
+        cls,
+        runner_instance,
+        agent: Agent,
+        input: List[Dict[str, Any]],
+        stream: bool = False,
+        stream_type_prefix: str = ""
+    ):
         input.pop()
-        return await runner_instance.run_sub_agent(agent, input)
+        if not stream:
+            yield await runner_instance.run_sub_agent(
+                agent,
+                input,
+                stream=stream,
+                stream_type_prefix=stream_type_prefix
+            ).__anext__(); return
+        
+        async for event in runner_instance.run_sub_agent(
+            agent,
+            input,
+            stream=stream,
+            stream_type_prefix=stream_type_prefix
+        ):
+            yield event
