@@ -11,6 +11,7 @@ A powerful Python SDK for building AI agents with support for MCP servers, funct
 - 📡 **Streaming Support**: Real-time streaming of agent responses and tool calls
 - 🔄 **Async/Sync APIs**: Both synchronous and asynchronous execution modes
 - 📊 **Iteration Control**: Configurable maximum iterations to prevent infinite loops
+- 💰 **Cost**: Cost visibility per iteration or at the end of full agent run.
 - 🔍 **Web Search**: Built-in web search capabilities for OpenAI and Anthropic models
 - ✅ **Tool Approvals**: Optional approval system for tool and sub-agent execution
 - 🎯 **Input Filtering**: Custom input filtering before LLM calls
