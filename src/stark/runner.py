@@ -124,20 +124,27 @@ class Runner():
             model_output: ModelOutput = None
             if self.stream:
                 # Consume the stream and emit events for clients
-                async for stream_event in provider.stream_response(llm_response, self.stream_type_prefix):
+                async for stream_event in provider.stream_response(
+                    llm_response,
+                    run_context.messages,
+                    self.stream_type_prefix
+                ):
                     if stream_event.type == (self.stream_type_prefix+Stream.MODEL_STREAM_COMPLETED):
                         model_output = stream_event.data
+                        break
                     else:
                         yield stream_event
             else:
                 # Parse LLM async (non-stream) response
                 model_output = provider.response(llm_response)
             
-            run_context.messages.append(model_output.model_dump(exclude_defaults=True))
+            run_context.messages.append(model_output.model_dump(exclude_defaults=True, exclude=["cost"]))
+            run_context.run_cost = run_context.run_cost + model_output.cost
 
             iteration_data = IterationData(
                 iterations=run_context.iterations,
-                has_tool_calls=bool(model_output.tool_calls)
+                has_tool_calls=bool(model_output.tool_calls),
+                iteration_cost=model_output.cost
             )
 
             logger.info(

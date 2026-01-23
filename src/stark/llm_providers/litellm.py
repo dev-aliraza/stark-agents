@@ -13,6 +13,9 @@ class LiteLLM(LLMProvider):
         metadata: Dict[str, Any] = {}
         if "trace_id" in kwargs:
             metadata["trace_id"] = kwargs.pop("trace_id")
+        
+        if "stream" in kwargs and kwargs.get("stream"):
+            kwargs["stream_options"] = {"include_usage": True}
 
         return await litellm.acompletion(
             model=model,
@@ -26,7 +29,10 @@ class LiteLLM(LLMProvider):
         )
 
     def response(self, response) -> ModelOutput:
-        model_output = ModelOutput(role="assistant")
+        model_output = ModelOutput(
+            role="assistant",
+            cost=litellm.completion_cost(completion_response=response)
+        )
 
         if hasattr(response, "choices") and len(response.choices) > 0:
             res = response.choices[0].message
@@ -54,11 +60,13 @@ class LiteLLM(LLMProvider):
 
         return model_output
     
-    async def stream_response(self, response, type_prefix: str = "") -> AsyncIterator[Stream.Event]:
+    async def stream_response(self, response, messages, type_prefix: str = "") -> AsyncIterator[Stream.Event]:
         model_output = ModelOutput(role="assistant")
         reasoning_content = ""
         signature = ""
+        chunks = []
         async for chunk in response:
+            chunks.append(chunk)
             if hasattr(chunk, "choices") and len(chunk.choices) > 0:
                 delta = chunk.choices[0].delta
 
@@ -111,6 +119,9 @@ class LiteLLM(LLMProvider):
                 thinking_block["signature"] = signature
             model_output.thinking_blocks.append(thinking_block)
 
+        model_output.cost = litellm.completion_cost(
+            completion_response=litellm.stream_chunk_builder(chunks, messages=messages)
+        )
         # Yield final complete response
         yield ProviderSream.model_stream_completed(model_output, type_prefix); return
 

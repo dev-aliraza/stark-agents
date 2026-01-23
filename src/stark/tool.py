@@ -234,6 +234,7 @@ class Tool:
                     yield stream_event
 
         runner_context.subagents_messages[tool_name.removeprefix("sub_agent__")] = subagent_repsonse.messages
+        runner_context.run_cost = runner_context.run_cost + subagent_repsonse.run_cost
         if subagent_repsonse.output:
             tool_result = subagent_repsonse.output
         else:
@@ -270,6 +271,7 @@ class Tool:
                 else:
                     yield stream_event
 
+        runner_context.run_cost = runner_context.run_cost + agent_response.run_cost
         if agent_response.output:
             tool_result = agent_response.output
         else:

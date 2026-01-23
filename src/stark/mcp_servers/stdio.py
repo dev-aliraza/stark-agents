@@ -22,10 +22,10 @@ class StdioMCP():
                 "description": tool.description or ""
             }
         }
-        if tool.inputSchema:
+
+        if "properties" in tool.inputSchema and tool.inputSchema["properties"]:
             tool_def["function"]["parameters"] = tool.inputSchema
         return tool_def
-
 
     def __format_tools_for_input(self, tools: List[Tool], include: List[str], exclude: List[str]) -> List:
         tools_output: List[Any] = []

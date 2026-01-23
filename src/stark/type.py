@@ -34,6 +34,7 @@ class ModelOutput(BaseModel):
     content: str = ""
     tool_calls: List[ToolCall] = []
     thinking_blocks: List[Dict] = []
+    cost: float = 0.0
 
 class ProviderResponse(BaseModel):
     content: str
@@ -48,10 +49,12 @@ class RunContext(BaseModel):
     subagents_response: Dict[str, Any] = {}
     error: Optional[str] = None
     max_iterations_reached: bool = False
+    run_cost: float = 0.0
 
 class IterationData(BaseModel):
     iterations: int
     has_tool_calls: bool
+    iteration_cost: float
 
 class ToolCallResponse(BaseModel):
     role: str
