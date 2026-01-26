@@ -1,6 +1,6 @@
-import datetime
+import logging
 
-class logger:
+class StarkLogger:
 
     # ANSI Color Codes
     RESET = "\033[0m"
@@ -11,53 +11,45 @@ class logger:
     YELLOW = "\033[93m"
     BLUE = "\033[94m"
 
-    include_time = True
-    stark_logo = False
+    class LevelOnlyFormatter(logging.Formatter):
+        """Formatter that only applies color to the levelname."""
 
-    @classmethod
-    def _get_timestamp(cls):
-        if cls.include_time:
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            return f"{cls.GRAY}[{now}]{cls.RESET} "
-        return ""
+        # Color codes
+        grey = "\x1b[38;20m"
+        cyan = "\x1b[36;20m"
+        yellow = "\x1b[33;20m"
+        red = "\x1b[31;20m"
+        bold_red = "\x1b[31;1m"
+        file_color = "\x1b[35m"
+        reset = "\x1b[0m"
+
+        # Base format - we use a placeholder {color} for the level part
+        # Note: We move the color start/end to be tight around %(levelname)s
+        BASE_FORMAT = "%(asctime)s - {color}%(levelname)-8s{reset} - %(message)s {file_color}(%(filename)s:%(lineno)d){reset}"
+
+        FORMATS = {
+            logging.DEBUG: BASE_FORMAT.format(color=grey, reset=reset, file_color=file_color),
+            logging.INFO: BASE_FORMAT.format(color=cyan, reset=reset, file_color=file_color),
+            logging.WARNING: BASE_FORMAT.format(color=yellow, reset=reset, file_color=file_color),
+            logging.ERROR: BASE_FORMAT.format(color=red, reset=reset, file_color=file_color),
+            logging.CRITICAL: BASE_FORMAT.format(color=bold_red, reset=reset, file_color=file_color),
+        }
+
+        def format(self, record):
+            log_fmt = self.FORMATS.get(record.levelno)
+            formatter = logging.Formatter(log_fmt, datefmt='%Y-%m-%d %H:%M:%S')
+            return formatter.format(record)
+
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(logging.DEBUG)
+        stream_handler.setFormatter(self.LevelOnlyFormatter())
+        self.logger.addHandler(stream_handler)
     
-    @classmethod
-    def _stark_logo(cls):
-        if cls.stark_logo:
-            return f"{cls.GRAY}[STARK]{cls.RESET} "
-        return ""
+    def get_logger(self) -> logging.Logger:
+        return self.logger
 
-    @classmethod
-    def info(cls, message):
-        """Log an informational message in Green."""
-        timestamp = cls._get_timestamp()
-        stark_logo = cls._stark_logo()
-        print(f"{stark_logo}{timestamp}{cls.GREEN}[INFO]{cls.RESET} {message}")
 
-    @classmethod
-    def warning(cls, message):
-        """Log a warning message in Yellow."""
-        timestamp = cls._get_timestamp()
-        stark_logo = cls._stark_logo()
-        print(f"{stark_logo}{timestamp}{cls.YELLOW}[WARN]{cls.RESET} {message}")
-
-    @classmethod
-    def error(cls, message):
-        """Log an error message in Red."""
-        timestamp = cls._get_timestamp()
-        stark_logo = cls._stark_logo()
-        print(f"{stark_logo}{timestamp}{cls.RED}[ERROR] {message}{cls.RESET}")
-
-    @classmethod
-    def debug(cls, message):
-        """Log a debug message in Blue."""
-        timestamp = cls._get_timestamp()
-        stark_logo = cls._stark_logo()
-        print(f"{stark_logo}{timestamp}{cls.BLUE}[DEBUG]{cls.RESET} {message}")
-    
-    @classmethod
-    def success(cls, message):
-        """Log a success message in Bold Green."""
-        timestamp = cls._get_timestamp()
-        stark_logo = cls._stark_logo()
-        print(f"{stark_logo}{timestamp}{cls.BOLD}{cls.GREEN}[SUCCESS]{cls.RESET} {message}")
+logger: logging.Logger = StarkLogger().get_logger()

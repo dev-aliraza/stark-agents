@@ -6,11 +6,6 @@ def stark_tool(func):
     Decorator to register a function as an MCP tool.
     Attaches an 'mcp_def' attribute to the function containing the tool definition.
     """
-    
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        return func(*args, **kwargs)
-
     # --- 1. Basic Metadata ---
     tool_name = func.__name__
     # Extract description from docstring (default to empty string if None)
@@ -70,12 +65,12 @@ def stark_tool(func):
             required_fields.append(param_name)
 
     # --- 4. Construct the MCP Tool Definition ---
-    wrapper.tool_def = {
+    tool_def = {
         "name": tool_name,
         "description": tool_description,
     }
     if properties:
-        wrapper.tool_def.update({
+        tool_def.update({
             "parameters": {
                 "type": "object",
                 "properties": properties,
@@ -83,9 +78,17 @@ def stark_tool(func):
         })
 
     if properties and required_fields:
-        wrapper.tool_def["parameters"]["required"] = required_fields
-    
-    # helper method to get the JSON easily
-    wrapper.get_json_schema = lambda: json.dumps(wrapper.tool_def, indent=2)
+        tool_def["parameters"]["required"] = required_fields
 
-    return wrapper
+    if inspect.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def wrapper_async(*args, **kwargs):
+            return await func(*args, **kwargs)
+        wrapper_async.get_json_schema = lambda: json.dumps(tool_def, indent=2)
+        return wrapper_async
+    else:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        wrapper.get_json_schema = lambda: json.dumps(tool_def, indent=2)
+        return wrapper

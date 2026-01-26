@@ -204,7 +204,7 @@ class Tool:
         return tool_result
     
     async def __call_function_tool(self, tool_name: str, arguments) -> str:
-        tool_result = self.ft_manager.call_tool(tool_name, arguments)
+        tool_result = await self.ft_manager.call_tool(tool_name, arguments)
         if not isinstance(tool_result, str):
             tool_result = str(tool_result)
             

@@ -1,4 +1,4 @@
-import json, inspect, asyncio
+import json, inspect, asyncio, functools
 from typing import List, Callable, Dict, Any
 
 class FunctionToolManager:
@@ -16,7 +16,12 @@ class FunctionToolManager:
         tools = []
         class_instance = None
         for function_tool in self.function_tools:
-            if self.__is_class_instance(function_tool):
+            func_args = {}
+            if isinstance(function_tool, functools.partial):
+                func_args = function_tool.keywords.copy() if function_tool.keywords else {}
+                function_tool = function_tool.func
+
+            elif self.__is_class_instance(function_tool):
                 class_instance = function_tool
                 function_tool = function_tool.__class__
 
@@ -36,7 +41,8 @@ class FunctionToolManager:
                         self.func_name_map[tool_func_def["name"]] = {
                             "type": "class_instance",
                             "function_name": name,
-                            "class_instance": class_instance
+                            "class_instance": class_instance,
+                            "args": func_args
                         }
 
             elif (inspect.isfunction(function_tool) or inspect.ismethod(function_tool)) and callable(function_tool):
@@ -49,7 +55,8 @@ class FunctionToolManager:
                     })
                     self.func_name_map[tool_func_def["name"]] = {
                         "type": "function",
-                        "function": function_tool
+                        "function": function_tool,
+                        "args": func_args
                     }
                 
         return tools
@@ -57,7 +64,7 @@ class FunctionToolManager:
     def get_tools(self) -> List[Dict]:
         return self.tools
 
-    def call_tool(self, tool_name: str, arguments: Any):
+    async def call_tool(self, tool_name: str, arguments: Any):
         tool_details = self.func_name_map.get(tool_name, None)
         tool_func = None
         if tool_details:
@@ -68,9 +75,11 @@ class FunctionToolManager:
                 tool_func_name = tool_details["function_name"]
                 tool_func = getattr(tool_class_instance, tool_func_name)
             
+            arguments.update(tool_details["args"]) if isinstance(arguments, dict) else None
+            
             if tool_func:
                 if inspect.iscoroutinefunction(tool_func):
-                    return asyncio.run(tool_func(**arguments))
+                    return await tool_func(**arguments)
                 return tool_func(**arguments)
         
         return "Tool call didn't happen"

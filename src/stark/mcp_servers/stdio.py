@@ -85,7 +85,7 @@ class StdioMCP():
             self.tools = self.__format_tools_for_input((await session.list_tools()).tools, include, exclude)
             self.session = session
 
-            logger.success(f"✅ {name} connected and initialized.")
+            logger.info(f"✅ {name} connected and initialized.")
             return _exit_stack
 
         except Exception as e:
