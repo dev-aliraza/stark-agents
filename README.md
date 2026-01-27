@@ -1,23 +1,29 @@
 # Stark Agents
 
-A powerful Python SDK for building AI agents with support for MCP servers, function tools, hierarchical sub-agents, and advanced execution control.
+A powerful Python ADK for building model agnostic AI agents with the support for MCP servers, function tools, hierarchical sub-agents, and advanced execution control.
 
 ## Features
 
-- 🤖 **Multi-LLM Support**: Built-in support for OpenAI, Anthropic, and Gemini via LiteLLM
-- 🔧 **MCP Server Integration**: Connect to Model Context Protocol (MCP) servers for extended capabilities
-- 🛠️ **Function Tools**: Define custom Python functions or classes as tools with automatic schema generation
-- 🌳 **Hierarchical Agents**: Create complex agent hierarchies with sub-agents
-- 📡 **Streaming Support**: Real-time streaming of agent responses and tool calls
-- 🔄 **Async/Sync APIs**: Both synchronous and asynchronous execution modes
-- 📊 **Iteration Control**: Configurable maximum iterations to prevent infinite loops
-- 💰 **Cost**: Cost visibility per iteration or at the end of full agent run.
-- 🔍 **Web Search**: Built-in web search capabilities for OpenAI and Anthropic models
-- ✅ **Tool Approvals**: Optional approval system for tool and sub-agent execution
-- 🎯 **Input Filtering**: Custom input filtering before LLM calls
-- 🧠 **Skills System**: Load reusable capabilities from markdown files
-- 💭 **Reasoning Models**: Support for thinking/reasoning models (e.g., O1, Claude 3.5 Sonnet)
-- 📝 **Tracing**: Built-in trace ID support for debugging and monitoring
+- 🧠 **Model Agnostic**: Built on top of LiteLLM, allowing you to use 100+ LLMs (OpenAI, Anthropic, Gemini, DeepSeek, Ollama, etc.) interchangeably.
+- 🔧 **Native MCP Support**: First-class support for Model Context Protocol (MCP) servers. Connect any MCP server to extend agent capabilities instantly.
+- 📚 **Markdown-based Skills**: Define agent skills in simple Markdown files (`SKILL.md`) with natural language. No complex coding required to add new capabilities.
+- 🛠️ **Function Tools & Schema**: Write standard Python functions or classes. Stark automatically generates JSON schemas and handles execution.
+- 👥 **Hierarchical Agents**: Build complex workflows with a main agent delegating tasks to specialized sub-agents.
+- 🪝 **Lifecycle Hooks**: Granular control with `model_input_hook`, `post_llm_hook`, and `iteration_end_hook` to modify behavior at every step.
+- 📡 **Streaming Support**: Real-time streaming of content, tool calls, and state updates for responsive UI applications.
+- 🔍 **Web Search**: Built-in support for web search capabilities with citation tracking.
+- 🛡️ **Human-in-the-loop**: Comprehensive approval systems for sensitive tool calls and actions.
+
+## Comparison with other ADKs
+
+| Feature | Stark Agents | LangChain | AutoGen | CrewAI |
+| :--- | :--- | :--- | :--- | :--- |
+| **Core Philosophy** | **Lightweight, Model Agnostic, Skill-based** | Chain-based, Extensive Integrations | Conversational, Multi-agent | Role-playing, Process-oriented |
+| **Model Support** | **Truly Agnostic (via LiteLLM)** | Extensive (via integrations) | Extensive | Open Source focus |
+| **Skill Definition** | **Markdown / Natural Language** | (No Skills Support) | (No Skills Support) | (No Skills Support) |
+| **Complexity** | **Low (Pythonic, Minimal)** | High (Steep learning curve) | Medium | Medium |
+| **MCP Support** | **Native First-Class** | Via community/addons | Via extensions | Via extensions |
+| **Agent Definition** | **Single Class (Agent)** | Multiple Chains/Agents | ConversationalAgent | Agent Role Class |
 
 ## Installation
 
@@ -381,12 +387,12 @@ def filter_sensitive_data(messages: list) -> list:
 agent = Agent(
     name="Secure-Agent",
     instructions="You are a helpful assistant",
-    model="claude-sonnet-4-5"
+    model="claude-sonnet-4-5",
+    model_input_hook=filter_sensitive_data
 )
 
 result = Runner(agent).run(
-    input=[{"role": "user", "content": "My card is 1234-5678-9012-3456"}],
-    input_filter=filter_sensitive_data
+    input=[{"role": "user", "content": "My card is 1234-5678-9012-3456"}]
 )
 ```
 
@@ -409,6 +415,9 @@ Agent(
     approvals: Dict[str, Callable] = None,       # Tool approval functions (regex patterns)
     skills: List[str] = None,                    # List of paths to skill directories
     skill_model: str = None,                     # Model to use for skill execution (defaults to main model)
+    model_input_hook: Callable = None,           # Function to modify input before LLM call
+    post_llm_hook: Callable = None,              # Function to modify response after LLM call
+    iteration_end_hook: Callable = None,         # Function to run at end of iteration (except the last iteration - Not useful for the agents with only 1 iteration)
     parallel_tool_calls: bool = None,            # Enable parallel tool execution
     thinking_level: str = None,                  # Reasoning effort: "none", "low", "medium", "high"
     llm_provider: str = OPENAI,                  # LLM provider (OPENAI, ANTHROPIC, GEMINI)
@@ -427,8 +436,7 @@ Executes agents and manages their lifecycle.
 ```python
 runner = Runner(agent)
 result = runner.run(
-    input=[{"role": "user", "content": "Hello"}],
-    input_filter=None  # Optional input filter function
+    input=[{"role": "user", "content": "Hello"}]
 )
 ```
 
@@ -437,8 +445,7 @@ result = runner.run(
 ```python
 runner = Runner(agent)
 result = await runner.run_async(
-    input=[{"role": "user", "content": "Hello"}],
-    input_filter=None  # Optional input filter function
+    input=[{"role": "user", "content": "Hello"}]
 )
 ```
 
@@ -447,8 +454,7 @@ result = await runner.run_async(
 ```python
 runner = Runner(agent)
 async for event in runner.run_stream(
-    input=[{"role": "user", "content": "Hello"}],
-    input_filter=None  # Optional input filter function
+    input=[{"role": "user", "content": "Hello"}]
 ):
     # Handle events
     pass

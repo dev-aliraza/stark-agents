@@ -14,6 +14,9 @@ class Agent():
         approvals: Optional[Dict[str, Callable]]= None, # This can be use to approve tools and sub agents
         skills: Optional[List[str]] = None,
         skill_model: Optional[str] = None,
+        model_input_hook: Optional[Callable] = None,
+        post_llm_hook: Optional[Callable] = None,
+        iteration_end_hook: Optional[Callable] = None,
         parallel_tool_calls: Optional[bool] = None,
         thinking_level: Optional[str] = None, #["none", "low", "medium", "high"]
         llm_provider: Optional[str] = OPENAI,
@@ -32,6 +35,9 @@ class Agent():
         self.approvals = approvals
         self.skills = skills
         self.skill_model = skill_model
+        self.model_input_hook = model_input_hook
+        self.post_llm_hook = post_llm_hook
+        self.iteration_end_hook = iteration_end_hook
         self.parallel_tool_calls = parallel_tool_calls
         self.thinking_level = thinking_level
         self.llm_provider = llm_provider
@@ -71,6 +77,15 @@ class Agent():
     
     def get_skill_model(self) -> Optional[str]:
         return self.skill_model
+    
+    def get_model_input_hook(self) -> Optional[Callable]:
+        return self.model_input_hook
+    
+    def get_post_llm_hook(self) -> Optional[Callable]:
+        return self.post_llm_hook
+    
+    def get_iteration_end_hook(self) -> Optional[Callable]:
+        return self.iteration_end_hook
     
     def get_parallel_tool_calls(self) -> Optional[bool]:
         return self.parallel_tool_calls

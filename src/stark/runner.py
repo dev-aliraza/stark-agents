@@ -1,13 +1,14 @@
-import json, asyncio, sys
-from typing import List, Dict, Any, Callable, AsyncIterator
+import json, asyncio, sys, copy, inspect
+from typing import List, Dict, Any, AsyncIterator
 from .agent import Agent
-from .llm import init_llm
+from .llm import LLM
 from .llm_providers.provider import LLMProvider
 from .tool import Tool
 from .type import (
     Stream, RunContext, ToolCallResponse, IterationData, ModelOutput
 )
 from .logger import logger
+from litellm.llms.custom_httpx.async_client_cleanup import close_litellm_async_clients
 
 class RunnerStream:
 
@@ -69,10 +70,11 @@ class Runner():
         
         return messages
     
-    async def __input_hook(self, hook: Callable, run_response: RunContext) -> RunContext:
-        if not hook:
-            return run_response
-        return hook(run_response.model_copy(deep=True))
+    async def __run_hook_functions(self, func, *args, **kwargs) -> Any:
+        if inspect.iscoroutinefunction(func):
+            return await func(*args, **kwargs)
+        else:
+            return func(*args, **kwargs)
     
     async def __execution_response(
         self,
@@ -89,9 +91,7 @@ class Runner():
             return run_context
 
     async def __execute(
-        self, input: List[Dict[str, Any]],
-        input_hook: Callable = None,
-        iteration_end_hook: Callable = None
+        self, input: List[Dict[str, Any]]
     ) -> AsyncIterator[RunContext] | AsyncIterator[Stream.Event]:
         # Set system prompt for the model input
         input = self.__set_agent_instructions(input, self.agent.get_instructions())
@@ -103,13 +103,19 @@ class Runner():
             if self.stream:
                 yield RunnerStream.iteration_start(run_context.iterations, type_prefix=self.stream_type_prefix)
 
-            hook_response = await self.__input_hook(input_hook, run_context)
-            if not isinstance(hook_response, RunContext):
-                run_context.error = "Input hook response is not the RunContext type"
-                yield await self.__execution_response(run_context); return
+            # Model input manipulation
+            if self.agent.get_model_input_hook():
+                run_context.messages = await self.__run_hook_functions(
+                    self.agent.get_model_input_hook(),
+                    copy.deepcopy(run_context.messages)
+                )
+                if not isinstance(run_context.messages, List) or len(run_context.messages) < 1:
+                    run_context.error = "Model Input hook response is either empty or not a `List` type object"
+                    logger.error(run_context.error)
+                    yield await self.__execution_response(run_context); return
             
             # Run the LLM
-            provider: LLMProvider = init_llm(self.agent.get_llm_provider())
+            provider: LLMProvider = LLM.init(self.agent.get_llm_provider())
             llm_response = await provider.run_async(
                 model=self.agent.get_model(),
                 messages=run_context.messages,
@@ -140,6 +146,25 @@ class Runner():
             
             run_context.messages.append(model_output.model_dump(exclude_defaults=True, exclude=["cost"]))
             run_context.run_cost = run_context.run_cost + model_output.cost
+
+            # Inject your code to do anything after LLM response and before tool call.
+            # Usecases: Modify tool calls or to add any extra logic before tool call or
+            # to send tool call to any client
+            if self.agent.get_post_llm_hook():
+                try:
+                    model_output = await self.__run_hook_functions(
+                        self.agent.get_post_llm_hook(),
+                        model_output, run_cost=run_context.run_cost
+                    )
+                    if not isinstance(model_output, ModelOutput):
+                        run_context.error = "post_llm_hook doesn't return a `ModelOutput` object"
+                        logger.error(run_context.error + " - " + str(e))
+                        yield await self.__execution_response(run_context); return
+
+                except Exception as e:
+                    run_context.error = "post_llm_hook raise an exception"
+                    logger.error(run_context.error + " - " + str(e))
+                    yield await self.__execution_response(run_context); return
 
             iteration_data = IterationData(
                 iterations=run_context.iterations,
@@ -173,11 +198,19 @@ class Runner():
                 if self.stream:
                     yield RunnerStream.tool_response(tool_response, type_prefix=self.stream_type_prefix)
 
-            # Filter the response before the next agent iteration
-            # Usecases: To stop agent conditionally or persist the output somewhere
-            if iteration_end_hook and not iteration_end_hook(run_context):
-                run_context.error = "loop_output_hook returned had an error"
-                yield await self.__execution_response(run_context); return
+            # Inject your code to do anything with response before the next agent iteration
+            # Usecases: To stop agent conditionally or persist the output somewhere or
+            # to stream the output to any client
+            if self.agent.get_iteration_end_hook():
+                try:
+                    await self.__run_hook_functions(
+                        self.agent.get_iteration_end_hook(),
+                        run_context.model_copy(deep=True)
+                    )
+                except Exception as e:
+                    run_context.error = "iteration_end_hook raise an exception"
+                    logger.error(run_context.error + " - " + str(e))
+                    yield await self.__execution_response(run_context); return
 
             if self.stream:
                 # Yield iteration end event
@@ -195,41 +228,38 @@ class Runner():
     async def run_stream(
         self,
         input: List[Dict[str, Any]],
-        input_hook: Callable = None,
-        iteration_end_hook: Callable = None,
         stream_type_prefix: str = ""
     ) -> AsyncIterator[Stream.Event]:
         try:
+            # If caller function is 'run_sub_agent', its a sub agent call
+            if (sys._getframe(1).f_code.co_name) == 'run_sub_agent':
+                self.is_sub_agent = True
             self.stream = True
             self.stream_type_prefix = stream_type_prefix
             self.tool = await Tool(self).init_tools(self.agent)
-            async for event in self.__execute(
-                input=input,
-                input_hook=input_hook,
-                iteration_end_hook=iteration_end_hook
-            ):
+            async for event in self.__execute(input=input):
                 yield event
+            if not self.is_sub_agent:
+                await LLM.close_clients()
         except Exception as e:
             if self.tool:
                 await self.tool.close_mcp_manager()
+            LLM.close_clients()
             raise
 
     async def run_async(
         self,
-        input: List[Dict[str, Any]],
-        input_hook: Callable = None,
-        iteration_end_hook: Callable = None
+        input: List[Dict[str, Any]]
     ) -> RunContext:
         try:
             # If caller function is 'run_sub_agent', its a sub agent call
             if (sys._getframe(1).f_code.co_name) == 'run_sub_agent':
                 self.is_sub_agent = True
             self.tool = await Tool(self).init_tools(self.agent)
-            return await self.__execute(
-                input=input,
-                input_hook=input_hook,
-                iteration_end_hook=iteration_end_hook
-            ).__anext__()
+            result = await self.__execute(input=input).__anext__()
+            if not self.is_sub_agent:
+                await LLM.close_clients()
+            return result
         except Exception as e:
             if self.tool:
                 await self.tool.close_mcp_manager()
@@ -237,17 +267,11 @@ class Runner():
 
     def run(
         self,
-        input: List[Dict[str, Any]],
-        input_hook: Callable = None,
-        iteration_end_hook: Callable = None
+        input: List[Dict[str, Any]]
     ) -> RunContext:
         try:
             return asyncio.run(
-                self.run_async(
-                    input=input,
-                    input_hook=input_hook,
-                    iteration_end_hook=iteration_end_hook
-                )
+                self.run_async(input=input)
             )
         except Exception as e:
             raise

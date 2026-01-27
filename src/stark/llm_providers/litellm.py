@@ -2,6 +2,7 @@ import os, litellm
 from typing import List, Dict, Any, AsyncIterator
 from .provider import LLMProvider, ProviderSream
 from ..type import Stream, ModelOutput, ToolCall
+from litellm.llms.custom_httpx.async_client_cleanup import close_litellm_async_clients, register_async_client_cleanup
 
 class LiteLLM(LLMProvider):
     def __init__(self, provider):
@@ -124,5 +125,9 @@ class LiteLLM(LLMProvider):
         )
         # Yield final complete response
         yield ProviderSream.model_stream_completed(model_output, type_prefix); return
+    
+    @classmethod
+    async def close_clients(cls):
+        await close_litellm_async_clients()
 
     
