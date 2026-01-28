@@ -60,3 +60,12 @@ class ToolCallResponse(BaseModel):
     role: str
     tool_call_id: str
     content: Any
+
+class SkillConfig(BaseModel):
+    model: Optional[str] = None
+    llm_provider: Optional[str] = None
+    max_iterations: int = 100
+    max_output_tokens: int = 64000
+    parallel_tool_calls: bool = True
+    thinking_level: Optional[str] = None
+    enable_web_search: Optional[bool] = False

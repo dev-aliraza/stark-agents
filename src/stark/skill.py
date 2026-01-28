@@ -121,6 +121,7 @@ class Skill:
         code_tool = CodeTool()
         mcp_servers = {}
         function_tools = []
+        skill_config = self.agent.get_skill_config()
         if Path(skill_path + "/tools.py").exists():
             tools_var = runpy.run_path(skill_path + "/tools.py")
             if "TOOLS" in tools_var:
@@ -130,10 +131,14 @@ class Skill:
         return Agent(
             name=tool_name,
             instructions=instructions,
-            model=self.agent.get_skill_model() if self.agent.get_skill_model() else self.agent.get_model(),
+            model=skill_config.model if skill_config.model else self.agent.get_model(),
+            llm_provider=skill_config.llm_provider if skill_config.llm_provider else self.agent.get_llm_provider(),
             mcp_servers=mcp_servers,
             function_tools=[code_tool] + function_tools,
-            max_output_tokens=64000,
-            parallel_tool_calls=True,
-            max_iterations=100
+            max_output_tokens=skill_config.max_output_tokens,
+            parallel_tool_calls=skill_config.parallel_tool_calls,
+            max_iterations=skill_config.max_iterations,
+            thinking_level=skill_config.thinking_level,
+            enable_web_search=skill_config.enable_web_search
+        
         )

@@ -2,7 +2,7 @@ from .agent import Agent
 from .runner import Runner, RunnerStream
 from .stark_tool import stark_tool
 from .type import (
-    RunContext, Stream, IterationData, ModelOutput, ToolCallResponse
+    RunContext, Stream, IterationData, ModelOutput, ToolCallResponse, SkillConfig
 )
 from .util import Util
 from .logger import logger
@@ -17,6 +17,7 @@ __all__ = [
     "IterationData",
     "ModelOutput",
     "ToolCallResponse",
+    "SkillConfig",
     "Util",
     "logger"
 ]

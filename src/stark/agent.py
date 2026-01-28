@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional, Callable
 from .llm_providers import OPENAI
+from .type import SkillConfig
 
 class Agent():
     def __init__(self,
@@ -13,7 +14,7 @@ class Agent():
         sub_agents: Optional[List['Agent']] = [],
         approvals: Optional[Dict[str, Callable]]= None, # This can be use to approve tools and sub agents
         skills: Optional[List[str]] = None,
-        skill_model: Optional[str] = None,
+        skill_config: Optional[SkillConfig] = None,
         model_input_hook: Optional[Callable] = None,
         post_llm_hook: Optional[Callable] = None,
         iteration_end_hook: Optional[Callable] = None,
@@ -34,7 +35,7 @@ class Agent():
         self.sub_agents = sub_agents
         self.approvals = approvals
         self.skills = skills
-        self.skill_model = skill_model
+        self.skill_config = SkillConfig() if skills and not skill_config else skill_config
         self.model_input_hook = model_input_hook
         self.post_llm_hook = post_llm_hook
         self.iteration_end_hook = iteration_end_hook
@@ -75,8 +76,8 @@ class Agent():
     def get_skills(self) -> Optional[List[str]]:
         return self.skills
     
-    def get_skill_model(self) -> Optional[str]:
-        return self.skill_model
+    def get_skill_config(self) -> Optional[SkillConfig]:
+        return self.skill_config
     
     def get_model_input_hook(self) -> Optional[Callable]:
         return self.model_input_hook

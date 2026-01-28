@@ -197,14 +197,78 @@ When writing code, always include type hints and docstrings.
 
 ```python
 from stark import Agent, Runner
+from stark.type import SkillConfig
 
+# Basic skill loading
 agent = Agent(
     name="Dev-Agent",
     instructions="You are a senior developer.",
     model="claude-sonnet-4-5",
     skills=["./skills/python_expert"]  # Path to the skill folder
 )
+
+# Advanced: Customize skill execution with SkillConfig
+skill_config = SkillConfig(
+    model="gpt-4o",                    # Use a different model for skills
+    llm_provider="openai",             # Specify LLM provider for skills
+    max_iterations=50,                 # Increase iteration limit for skills
+    max_output_tokens=32000,           # Set max output tokens
+    parallel_tool_calls=True,          # Enable parallel tool execution
+    thinking_level="high",             # Set reasoning level for thinking models
+    enable_web_search=True             # Enable web search for skills
+)
+
+agent = Agent(
+    name="Dev-Agent",
+    instructions="You are a senior developer.",
+    model="claude-sonnet-4-5",
+    skills=["./skills/python_expert"],
+    skill_config=skill_config
+)
 ```
+
+### Advanced Skills Usage with Custom Tools
+
+Skills can have their own MCP servers and function tools by creating a `tools.py` file in the skill directory:
+
+**Directory Structure:**
+```
+skills/
+  └── web_scraper/
+      ├── SKILL.md
+      └── tools.py
+```
+
+**tools.py:**
+```python
+from stark import stark_tool
+import os
+
+@stark_tool
+def parse_html(html: str) -> str:
+    """Parse HTML content and extract text"""
+    # Your implementation
+    return "Parsed content"
+
+# Define tools dictionary
+TOOLS = {
+    "mcp": {
+        "browser": {
+            "command": "uvx",
+            "args": ["mcp-server-browser"],
+            "env": {}
+        }
+    },
+    "function": [
+        parse_html
+    ]
+}
+```
+
+When this skill is invoked, it will have access to:
+- The built-in `CodeTool` (automatically included)
+- Any MCP servers defined in `TOOLS["mcp"]`
+- Any function tools defined in `TOOLS["function"]`
 
 ### Reasoning Models
 
@@ -414,7 +478,7 @@ Agent(
     sub_agents: List[Agent] = [],                # Sub-agents for delegation
     approvals: Dict[str, Callable] = None,       # Tool approval functions (regex patterns)
     skills: List[str] = None,                    # List of paths to skill directories
-    skill_model: str = None,                     # Model to use for skill execution (defaults to main model)
+    skill_config: SkillConfig = None,            # Configuration for skill execution
     model_input_hook: Callable = None,           # Function to modify input before LLM call
     post_llm_hook: Callable = None,              # Function to modify response after LLM call
     iteration_end_hook: Callable = None,         # Function to run at end of iteration (except the last iteration - Not useful for the agents with only 1 iteration)
@@ -460,6 +524,26 @@ async for event in runner.run_stream(
     pass
 ```
 
+### SkillConfig
+
+Configuration class for customizing skill execution behavior.
+
+```python
+from stark.type import SkillConfig
+
+skill_config = SkillConfig(
+    model: Optional[str] = None,              # Model to use for skill execution (defaults to agent's model)
+    llm_provider: Optional[str] = None,       # LLM provider for skills (defaults to agent's provider)
+    max_iterations: int = 100,                # Maximum iterations for skill execution
+    max_output_tokens: int = 64000,           # Maximum output tokens for skills
+    parallel_tool_calls: bool = True,         # Enable parallel tool calls in skills
+    thinking_level: Optional[str] = None,     # Reasoning level: \"none\", \"low\", \"medium\", \"high\"
+    enable_web_search: bool = False           # Enable web search for skills
+)
+```
+
+**Use Case**: When you want skills to use different models or have different execution parameters than the main agent.
+
 ### RunContext
 
 The response object returned by agent execution.
@@ -469,9 +553,11 @@ class RunContext:
     messages: List[Dict[str, Any]]              # Complete conversation history
     output: str                                 # Final output of the agent
     iterations: int                             # Number of iterations executed
-    subagents_messages: List[Dict[str, Any]]    # Sub-agent messages (typically empty for Single Agent or Master Agent)
+    subagents_messages: Dict[str, List]         # Messages from all sub-agents (typically empty for Single Agent or Master Agent)
     subagents_response: Dict[str, Any]          # Responses from all sub-agents (typically empty for Single Agent)
+    error: Optional[str]                        # Error message if execution failed
     max_iterations_reached: bool                # Whether max iterations was hit
+    run_cost: float                             # Total cost of the run in USD
 ```
 
 ### Stream Events
@@ -484,10 +570,11 @@ When using streaming, you'll receive different event types:
 - `Stream.ITER_END`: Iteration completed (data: IterationData)
 - `Stream.AGENT_RUN_END`: Agent execution finished (data: RunContext)
 
-**Provider Events:**
+**Provider Events (from LLM):**
+- `Stream.REASONING_CHUNK`: Reasoning/thinking content chunk (for models with thinking capability)
 - `Stream.CONTENT_CHUNK`: Content chunk received (data: string)
 - `Stream.TOOL_CALLS`: Tool calls made (data: list of tool calls)
-- `Stream.PROVIDER_STREAM_COMPLETED`: Provider streaming completed (data: ProviderResponse)
+- `Stream.MODEL_STREAM_COMPLETED`: Provider streaming completed (data: ProviderResponse)
 
 ### Utility Classes
 
@@ -498,12 +585,20 @@ Helper utilities for common operations:
 ```python
 from stark import Util
 
-# Parse JSON from LLM responses (handles markdown code blocks)
+# 1. Parse JSON from LLM responses (handles markdown code blocks)
 data = Util.load_json('```json\n{"key": "value"}\n```')
+# Returns: {"key": "value"}
 
-# Create partial functions with pre-filled arguments
+# 2. Create partial functions with pre-filled arguments
 from functools import partial
-approval_func = Util.pass_function_with_args(my_approval, user_id=123)
+
+def my_approval_func(tool_name: str, args: dict, user_id: int):
+    print(f"User {user_id}: Approve {tool_name}?")
+    return True
+
+# Pass function with pre-filled user_id
+approval_with_user = Util.pass_function_with_args(my_approval_func, user_id=123)
+# Now approval_with_user only needs tool_name and args
 ```
 
 #### RunnerStream
@@ -742,6 +837,39 @@ agent = Agent(
 result = Runner(agent).run(input=[{"role": "user", "content": "Hello"}])
 print(f"Trace ID: {agent.get_trace_id()}")
 ```
+
+### Tool Naming Conventions
+
+Stark automatically prefixes tool names to avoid conflicts and identify tool types:
+
+| Tool Type | Prefix | Example |
+|-----------|--------|---------|
+| Function Tools | `st___` | `st___search_database` |
+| Class-Based Tools | `ClassName___` | `DatabaseTools___search` |
+| Sub-Agents | `sub_agent__` | `sub_agent__Delivery-Agent` |
+| Skills | `skill___` | `skill___python_expert` |
+| MCP Tools | (no prefix) | `slack_send_message` |
+
+These prefixes are handled internally and you don't need to use them when defining tools. The agent automatically recognizes and routes tool calls to the appropriate handler.
+
+### Logger
+
+Stark includes a built-in logger for debugging:
+
+```python
+from stark import logger
+
+# Use the logger in your code
+logger.debug("Debug message")
+logger.info("Info message")
+logger.warning("Warning message")
+logger.error("Error message")
+
+# The logger includes file name and line numbers automatically
+# Output format: YYYY-MM-DD HH:MM:SS - LEVEL - message (filename.py:123)
+```
+
+The logger is pre-configured with a StreamHandler and outputs to console with timestamps and source location.
 
 ## Best Practices
 
