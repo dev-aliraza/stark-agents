@@ -7,7 +7,7 @@ license = "Apache-2.0"
 authors = [{name = "Ali Raza", email = "dev.aliraza@gmail.com"}]
 keywords = ["agent", "ai agent", "asynchronous", "framework", "AI", "tasks"]
 dependencies = [
-    "litellm==1.80.11",
+    "litellm==1.81.5",
     "mcp==1.25.0",
 ]
 requires-python = ">=3.10"

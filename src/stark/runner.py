@@ -1,4 +1,4 @@
-import json, asyncio, sys, copy, inspect
+import json, asyncio, sys, copy, inspect, functools
 from typing import List, Dict, Any, AsyncIterator
 from .agent import Agent
 from .llm import LLM
@@ -71,6 +71,11 @@ class Runner():
         return messages
     
     async def __run_hook_functions(self, func, *args, **kwargs) -> Any:
+        if isinstance(func, functools.partial):
+            args = args + func.args
+            kwargs.update(func.keywords.copy() if func.keywords else {})
+            func = func.func
+
         if inspect.iscoroutinefunction(func):
             return await func(*args, **kwargs)
         else:
@@ -239,12 +244,9 @@ class Runner():
             self.tool = await Tool(self).init_tools(self.agent)
             async for event in self.__execute(input=input):
                 yield event
-            if not self.is_sub_agent:
-                await LLM.close_clients()
         except Exception as e:
             if self.tool:
                 await self.tool.close_mcp_manager()
-            LLM.close_clients()
             raise
 
     async def run_async(
@@ -257,8 +259,6 @@ class Runner():
                 self.is_sub_agent = True
             self.tool = await Tool(self).init_tools(self.agent)
             result = await self.__execute(input=input).__anext__()
-            if not self.is_sub_agent:
-                await LLM.close_clients()
             return result
         except Exception as e:
             if self.tool:
