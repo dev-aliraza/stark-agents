@@ -1,6 +1,6 @@
 [project]
 name = "stark-agents"
-version = "0.2.3"
+version = "0.2.4"
 description = "A powerful Python ADK for building model agnostic AI agents"
 dynamic = ["readme"]
 license = "Apache-2.0"
