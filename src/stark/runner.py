@@ -179,7 +179,8 @@ class Runner():
 
             logger.info(
                 f"Iteration {run_context.iterations}: Received response - "
-                f"content length: {len(model_output.content)} chars, tool_calls: {len(model_output.tool_calls)}"
+                f"content length: {len(model_output.content)} chars, tool_calls: {len(model_output.tool_calls)} - "
+                f"tool_calls names: {', '.join([tc.function.get("name", "NONAME") for tc in model_output.tool_calls])}"
             )
 
             # If no tools return by LLM means agent is done working

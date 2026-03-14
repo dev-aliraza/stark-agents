@@ -114,11 +114,7 @@ class Skill:
     def get_skill_subagent(self, tool_name) -> Agent:
         skill = self.skills[tool_name].get("skill")
         skill_path = self.skills[tool_name].get("skill_path")
-        instructions = f"""This is a skill. Skill folder path is '{skill_path}'.
----
-{skill}
-"""
-        code_tool = CodeTool()
+        code_tool = CodeTool(workspace_dir=skill_path)
         mcp_servers = {}
         function_tools = []
         skill_config = self.agent.get_skill_config()
@@ -130,7 +126,7 @@ class Skill:
                 function_tools = tools.get("function", [])
         return Agent(
             name=tool_name,
-            instructions=instructions,
+            instructions=f"{skill}",
             model=skill_config.model if skill_config.model else self.agent.get_model(),
             llm_provider=skill_config.llm_provider if skill_config.llm_provider else self.agent.get_llm_provider(),
             mcp_servers=mcp_servers,
@@ -140,5 +136,4 @@ class Skill:
             max_iterations=skill_config.max_iterations,
             thinking_level=skill_config.thinking_level,
             enable_web_search=skill_config.enable_web_search
-        
         )
