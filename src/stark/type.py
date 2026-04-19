@@ -47,6 +47,7 @@ class RunContext(BaseModel):
     output: str = ""
     subagents_messages: Dict[str, List] = {}
     subagents_response: Dict[str, Any] = {}
+    tool_outputs: Dict[str, List[Any]] = {}
     error: Optional[str] = None
     max_iterations_reached: bool = False
     run_cost: float = 0.0

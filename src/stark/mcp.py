@@ -20,6 +20,7 @@ class MCPManager:
         if server_configs:
             self.server_configs = server_configs
             self.tool_to_server: Dict[str, str]= {}
+            self.tools_in_output: set = set()
             self._exit_stack = AsyncExitStack()
     
     def __map_tool_name_to_server_name(self, server_name: str, tools: List[Dict]):
@@ -35,6 +36,8 @@ class MCPManager:
             await server.connect_server(name, config, self._exit_stack)
             self.servers[name] = server
             self.__map_tool_name_to_server_name(name, server.get_tools())
+            for tool_name in config.get("tool_in_output", []):
+                self.tools_in_output.add(tool_name)
     
     async def call_tool(self, tool_name: str, arguments: dict = None):
         if self.servers:
@@ -54,3 +57,6 @@ class MCPManager:
         if tool_name in self.tool_to_server:
             return True
         return False
+
+    def is_tool_in_output(self, tool_name: str) -> bool:
+        return tool_name in self.tools_in_output

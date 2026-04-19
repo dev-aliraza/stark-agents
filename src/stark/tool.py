@@ -1,4 +1,4 @@
-import json, inspect, re, copy
+import json, inspect, re, copy, asyncio
 from typing import List, Dict, AsyncIterator, Any
 from .mcp import MCPManager
 from .function import FunctionToolManager
@@ -94,13 +94,21 @@ class Tool:
         ai_tool_calls: List[ToolCall],
         runner_context: RunContext = None
     ) -> AsyncIterator[List[ToolCallResponse]] | AsyncIterator[Any]:
+        async def _collect(ai_tool_call):
+            events = []
+            async for event in self.__call(ai_tool_call, runner_context):
+                events.append(event)
+            return events
+
+        all_results = await asyncio.gather(*[_collect(tc) for tc in ai_tool_calls])
+
         tool_responses: List[ToolCallResponse] = []
-        for ai_tool_call in ai_tool_calls:
-            async for tool_call_event in self.__call(ai_tool_call, runner_context):
-                if isinstance(tool_call_event, ToolCallResponse):
-                    tool_responses.append(tool_call_event)
+        for events in all_results:
+            for event in events:
+                if isinstance(event, ToolCallResponse):
+                    tool_responses.append(event)
                 else:
-                    yield tool_call_event
+                    yield event
         yield tool_responses; return
 
     async def __call(
@@ -128,6 +136,12 @@ class Tool:
 
         if self.mcp_manager and self.mcp_manager.is_mcp_tool(tool_name):
             tool_result = await self.__call_mcp_tool(tool_name, arguments)
+            if runner_context and self.mcp_manager.is_tool_in_output(tool_name):
+                try:
+                    output = json.loads(tool_result)
+                except (json.JSONDecodeError, TypeError):
+                    output = tool_result
+                runner_context.tool_outputs.setdefault(tool_name, []).append(output)
 
         elif self.ft_manager and self.ft_manager.is_function_tool(tool_name):
             tool_result = await self.__call_function_tool(tool_name, arguments)
@@ -235,6 +249,8 @@ class Tool:
 
         runner_context.subagents_messages[tool_name.removeprefix("sub_agent__")] = subagent_repsonse.messages
         runner_context.run_cost = runner_context.run_cost + subagent_repsonse.run_cost
+        for k, v in subagent_repsonse.tool_outputs.items():
+            runner_context.tool_outputs.setdefault(k, []).extend(v)
         if subagent_repsonse.output:
             tool_result = subagent_repsonse.output
         else:
@@ -272,6 +288,8 @@ class Tool:
                     yield stream_event
 
         runner_context.run_cost = runner_context.run_cost + agent_response.run_cost
+        for k, v in agent_response.tool_outputs.items():
+            runner_context.tool_outputs.setdefault(k, []).extend(v)
         if agent_response.output:
             tool_result = agent_response.output
         else:
