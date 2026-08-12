@@ -21,8 +21,12 @@ Then:
     pip install 'stark-agents[slack]'
     python examples/03_slack_bot.py
 
-The bot answers @mentions in channels and direct messages, replying in-thread. It posts a
-placeholder immediately and edits it as the answer streams in.
+The bot answers @mentions in channels and direct messages, replying in-thread.
+
+The answer is not streamed. You get a live progress message — one `:loading123:` line per
+agent delegation and tool call, struck through with `:talabatdone:` as each finishes — and
+then the finished answer as its own message. Add both custom emoji to your workspace, or
+Slack renders the literal `:loading123:` text.
 
 Both tokens are checked before any MCP server starts, so a missing one fails fast.
 """

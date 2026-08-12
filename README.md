@@ -314,9 +314,30 @@ export SLACK_APP_TOKEN=xapp-...   # app-level token, Socket Mode enabled
 stark --agents ./agents --listener slack
 ```
 
-Responds to `@mentions` in channels and to direct messages, replying in-thread. It posts a
-placeholder immediately and edits it as the answer streams in. Subscribe your app to the
-`app_mention` and `message.im` events.
+Responds to `@mentions` in channels and to direct messages, replying in-thread. Subscribe
+your app to the `app_mention` and `message.im` events.
+
+**The answer is not streamed.** Slack gets two messages: a live progress message, and the
+finished answer posted once. Each agent delegation and tool call appears as a
+`:loading123:` line while it runs, then is struck through with `:talabatdone:` when it
+completes — tool calls nested under the agent that ran them:
+
+```
+:talabatdone: ~sales-agent: What were EMEA sales in Q2?~
+        ↳ :talabatdone: ~sales-agent → workspace_run~
+:loading123: inventory-agent: Is ATL-LITE-002 in stock?
+        ↳ :loading123: inventory-agent → check_stock
+```
+
+A step that fails is struck with `:warning:` instead, and nothing is ever left spinning —
+anything still running when the query ends is settled. Both emoji are custom, so add
+`:loading123:` and `:talabatdone:` to your workspace or Slack will render the literal
+`:name:` text.
+
+Edits are coalesced rather than sent per event: the first change goes out immediately and
+changes during the cooldown collapse into one edit, which keeps a wide parallel run inside
+Slack's ~1 edit/second limit. On a fast query several steps may therefore go from unseen to
+struck in a single edit.
 
 Both tokens must be present or startup fails with a clear error before any MCP server boots.
 

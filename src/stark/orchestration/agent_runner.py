@@ -41,8 +41,20 @@ class AgentRunner:
         )
         return "\n\n".join(sections)
 
-    async def run(self, task: str, context: str, sink: ResponseSink) -> AgentResult:
+    async def run(
+        self,
+        task: str,
+        context: str,
+        sink: ResponseSink,
+        key: str | None = None,
+    ) -> AgentResult:
+        """Run one delegated task.
+
+        `key` identifies this delegation so progress events for it can be correlated;
+        the orchestrator passes the tool-call id, which is unique per turn.
+        """
         result = AgentResult(agent=self.config.name, task=task)
+        key = key or f"agent:{self.config.name}"
 
         user_content = task if not context.strip() else f"{task}\n\n## Context\n{context.strip()}"
         messages: list[dict[str, Any]] = [
@@ -51,7 +63,7 @@ class AgentRunner:
         ]
         tools = self.toolbox.schemas()
 
-        await sink.event("agent_start", f"{self.config.name}: {task}")
+        await sink.event("agent_start", f"{self.config.name}: {task}", key=key)
 
         while result.iterations < self.config.max_iterations:
             result.iterations += 1
@@ -70,7 +82,7 @@ class AgentRunner:
             except Exception as exc:
                 result.error = f"{type(exc).__name__}: {exc}"
                 logger.error("Agent '%s' model call failed: %s", self.config.name, exc)
-                await sink.event("agent_error", f"{self.config.name}: {result.error}")
+                await sink.event("agent_error", f"{self.config.name}: {result.error}", key=key)
                 return result
 
             result.cost += completion.cost
@@ -78,10 +90,10 @@ class AgentRunner:
 
             if not completion.tool_calls:
                 result.output = completion.content.strip()
-                await sink.event("agent_end", f"{self.config.name} finished")
+                await sink.event("agent_end", f"{self.config.name} finished", key=key)
                 return result
 
-            responses = await self._run_tools(completion.tool_calls, sink)
+            responses = await self._run_tools(completion.tool_calls, sink, key)
             messages.extend(responses)
 
         result.max_iterations_reached = True
@@ -91,21 +103,28 @@ class AgentRunner:
             self.config.name,
             self.config.max_iterations,
         )
-        await sink.event("agent_end", f"{self.config.name} stopped at its iteration limit")
+        await sink.event(
+            "agent_end", f"{self.config.name} stopped at its iteration limit", key=key
+        )
         return result
 
     async def _run_tools(
-        self, calls: list[ToolCall], sink: ResponseSink
+        self, calls: list[ToolCall], sink: ResponseSink, agent_key: str
     ) -> list[dict[str, Any]]:
         """Execute every tool the model asked for, concurrently."""
 
         async def execute(call: ToolCall) -> dict[str, Any]:
-            await sink.event("tool", f"{self.config.name} → {call.name}")
+            # Namespaced by the agent so two agents running the same tool concurrently
+            # never share a key.
+            tool_key = f"{agent_key}:{call.id}"
+            label = f"{self.config.name} → {call.name}"
+            await sink.event("tool", label, key=tool_key)
             try:
                 content = await self.toolbox.call(call.name, call.parsed_arguments())
             except Exception as exc:
                 logger.error("Agent '%s' tool '%s' failed: %s", self.config.name, call.name, exc)
                 content = f"[error] {call.name} failed: {exc}"
+            await sink.event("tool_end", label, key=tool_key)
             return {"role": "tool", "tool_call_id": call.id, "content": content}
 
         return list(await asyncio.gather(*(execute(call) for call in calls)))

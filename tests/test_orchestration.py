@@ -29,14 +29,16 @@ class RecordingSink(ResponseSink):
     def __init__(self):
         self.chunks: list[str] = []
         self.events: list[tuple[str, str]] = []
+        self.keys: list[str | None] = []
         self.final_text: str | None = None
         self.error_text: str | None = None
 
     async def chunk(self, text: str) -> None:
         self.chunks.append(text)
 
-    async def event(self, kind: str, detail: str) -> None:
+    async def event(self, kind: str, detail: str, key: str | None = None) -> None:
         self.events.append((kind, detail))
+        self.keys.append(key)
 
     async def final(self, text: str) -> None:
         self.final_text = text

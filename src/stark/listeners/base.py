@@ -32,8 +32,16 @@ class ResponseSink(ABC):
     async def chunk(self, text: str) -> None:
         """Handle one incremental slice of the answer."""
 
-    async def event(self, kind: str, detail: str) -> None:
-        """Report progress: a tool call, or an agent starting or finishing."""
+    async def event(self, kind: str, detail: str, key: str | None = None) -> None:
+        """Report progress: a tool call, or an agent starting or finishing.
+
+        `kind` is one of `agent_start`, `agent_end`, `agent_error`, `tool`, `tool_end`.
+
+        `key` correlates the start and end of the same unit of work, so a listener can
+        update the line it already rendered instead of appending a second one. Agent
+        names and tool names are not unique — the same agent can be delegated to twice
+        in one turn — so matching on `detail` is not reliable.
+        """
 
     @abstractmethod
     async def final(self, text: str) -> None:

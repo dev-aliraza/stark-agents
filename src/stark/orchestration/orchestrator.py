@@ -126,7 +126,9 @@ class Orchestrator:
                 }
 
             runner = AgentRunner(agent, self.registry.toolbox_for(agent))
-            agent_result = await runner.run(task, context, sink)
+            # The tool-call id is unique per turn, so it keys this delegation's progress
+            # even when the same agent is called twice at once.
+            agent_result = await runner.run(task, context, sink, key=call.id)
             result.agent_results.append(agent_result)
             result.cost += agent_result.cost
 

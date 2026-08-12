@@ -56,7 +56,7 @@ class CLISink(ResponseSink):
             self._started = True
         self._write(text)
 
-    async def event(self, kind: str, detail: str) -> None:
+    async def event(self, kind: str, detail: str, key: str | None = None) -> None:
         if not self.show_events:
             return
         marker = {

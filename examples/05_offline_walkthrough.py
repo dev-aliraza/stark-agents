@@ -132,7 +132,7 @@ class NarratingSink(ResponseSink):
     async def chunk(self, text: str) -> None:
         print(text, end="", flush=True)
 
-    async def event(self, kind: str, detail: str) -> None:
+    async def event(self, kind: str, detail: str, key: str | None = None) -> None:
         marker = {"agent_start": "→", "agent_end": "✓", "agent_error": "✗", "tool": "·"}
         print(f"\n   {marker.get(kind, '·')} {detail}", flush=True)
 

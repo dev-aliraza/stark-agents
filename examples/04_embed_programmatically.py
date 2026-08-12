@@ -47,8 +47,8 @@ class CollectingSink(ResponseSink):
         # Called for each streamed slice. Forward it to your transport here.
         self.text += text
 
-    async def event(self, kind: str, detail: str) -> None:
-        # kind is one of: agent_start, agent_end, agent_error, tool
+    async def event(self, kind: str, detail: str, key: str | None = None) -> None:
+        # kind is one of: agent_start, agent_end, agent_error, tool, tool_end
         self.events.append((kind, detail))
 
     async def final(self, text: str) -> None:
