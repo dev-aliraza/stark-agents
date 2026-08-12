@@ -1,29 +1,28 @@
 # Stark Agents
 
-A powerful Python ADK for building model agnostic AI agents with the support for MCP servers, function tools, hierarchical sub-agents, and advanced execution control.
+A lightweight Python ADK for discovering and orchestrating multi-agent workflows. Define
+each agent as a Markdown file, point Stark at the folder, and it handles discovery, MCP
+tool wiring, delegation, and the listener that takes user input.
+
+```python
+import stark
+
+stark.run()
+```
+
+That single call scans `./agents`, starts each agent's MCP servers, opens an interactive
+CLI, and routes every query through an orchestration loop that delegates to whichever
+agents are relevant — in parallel when the sub-tasks are independent.
 
 ## Features
 
-- 🧠 **Model Agnostic**: Built on top of LiteLLM, allowing you to use 100+ LLMs (OpenAI, Anthropic, Gemini, DeepSeek, Ollama, etc.) interchangeably.
-- 🔧 **Native MCP Support**: First-class support for Model Context Protocol (MCP) servers. Connect any MCP server to extend agent capabilities instantly.
-- 📚 **Markdown-based Skills**: Define agent skills in simple Markdown files (`SKILL.md`) with natural language. No complex coding required to add new capabilities.
-- 🛠️ **Function Tools & Schema**: Write standard Python functions or classes. Stark automatically generates JSON schemas and handles execution.
-- 👥 **Hierarchical Agents**: Build complex workflows with a main agent delegating tasks to specialized sub-agents.
-- 🪝 **Lifecycle Hooks**: Granular control with `model_input_hook`, `post_llm_hook`, and `iteration_end_hook` to modify behavior at every step.
-- 📡 **Streaming Support**: Real-time streaming of content, tool calls, and state updates for responsive UI applications.
-- 🔍 **Web Search**: Built-in support for web search capabilities with citation tracking.
-- 🛡️ **Human-in-the-loop**: Comprehensive approval systems for sensitive tool calls and actions.
-
-## Comparison with other ADKs
-
-| Feature | Stark Agents | LangChain | AutoGen | CrewAI |
-| :--- | :--- | :--- | :--- | :--- |
-| **Core Philosophy** | **Lightweight, Model Agnostic, Skill-based** | Chain-based, Extensive Integrations | Conversational, Multi-agent | Role-playing, Process-oriented |
-| **Model Support** | **Truly Agnostic (via LiteLLM)** | Extensive (via integrations) | Extensive | Open Source focus |
-| **Skill Definition** | **Markdown / Natural Language** | (No Skills Support) | (No Skills Support) | (No Skills Support) |
-| **Complexity** | **Low (Pythonic, Minimal)** | High (Steep learning curve) | Medium | Medium |
-| **MCP Support** | **Native First-Class** | Via community/addons | Via extensions | Via extensions |
-| **Agent Definition** | **Single Class (Agent)** | Multiple Chains/Agents | ConversationalAgent | Agent Role Class |
+- 📁 **Agents are folders, not code** — an `AGENT.md` with YAML frontmatter is a complete agent.
+- 🔌 **Native MCP** — declare stdio or streamable-HTTP servers in frontmatter; they start once at boot and stay warm.
+- 🧠 **Model agnostic** — LiteLLM underneath, so any of its 100+ providers works. Anthropic is the first-class default.
+- 🎧 **Pluggable listeners** — an interactive CLI or a Slack Socket Mode bot, same orchestration behind both.
+- ⚡ **Parallel delegation** — independent sub-tasks fan out concurrently; so do the tool calls inside each agent.
+- 🛠️ **Built-in workspace tools** — every agent can list, read, and run the scripts in its own directory, sandboxed to it.
+- 🧱 **Per-agent budgets** — each agent carries its own model, effort, iteration cap, and token cap.
 
 ## Installation
 
@@ -31,908 +30,353 @@ A powerful Python ADK for building model agnostic AI agents with the support for
 pip install stark-agents
 ```
 
-## Quick Start
+For the Slack listener:
 
-### Basic Agent
-
-```python
-from stark import Agent, Runner
-
-agent = Agent(
-    name="Assistant",
-    instructions="You are a helpful assistant",
-    model="claude-sonnet-4-5"
-)
-
-result = Runner(agent).run(input=[{"role": "user", "content": "Hello!"}])
-print(result.result[-1]["content"])
+```bash
+pip install 'stark-agents[slack]'
 ```
 
-### Agent with MCP Servers
+Requires Python 3.10+.
 
-```python
-import os
-from stark import Agent, Runner
+## Quick start
 
-mcp_servers = {
-    "slack": {
-        "command": "uvx",
-        "args": ["mcp-slack"],
-        "env": {
-            "SLACK_BOT_TOKEN": os.environ.get("SLACK_BOT_TOKEN", "")
-        }
-    }
-}
-
-agent = Agent(
-    name="Slack-Agent",
-    instructions="You can interact with Slack",
-    model="claude-sonnet-4-5",
-    mcp_servers=mcp_servers
-)
-
-result = Runner(agent).run(
-    input=[{"role": "user", "content": "Send a message to #general"}]
-)
-```
-
-### Agent with Function Tools
-
-#### Using the `@stark_tool` Decorator (Recommended)
-
-The `@stark_tool` decorator automatically generates JSON schemas from your function signatures:
-
-```python
-from stark import Agent, Runner, stark_tool
-
-@stark_tool
-def search_database(query: str, limit: int = 10) -> str:
-    """Search the database for information"""
-    # Your function implementation
-    results = ["item1", "item2"]
-    return f"Found {len(results)} results for '{query}'"
-
-@stark_tool
-def get_user_info(user_id: int, include_details: bool = False) -> str:
-    """Retrieve user information from the database"""
-    return f"User {user_id} details"
-
-agent = Agent(
-    name="Search-Agent",
-    instructions="You can search the database and get user info",
-    model="claude-sonnet-4-5",
-    function_tools=[search_database, get_user_info]
-)
-
-result = Runner(agent).run(
-    input=[{"role": "user", "content": "Search for users named John"}]
-)
-```
-
-#### Using Class-Based Tools
-
-You can also organize related tools into classes:
-
-```python
-from stark import Agent, Runner, stark_tool
-
-class DatabaseTools:
-    def __init__(self, db_connection):
-        self.db = db_connection
-    
-    @stark_tool
-    def search(self, query: str, limit: int = 10) -> str:
-        """Search the database"""
-        return f"Search results for: {query}"
-    
-    @stark_tool
-    def insert(self, table: str, data: dict) -> str:
-        """Insert data into a table"""
-        return f"Inserted into {table}"
-
-# Pass the class instance
-db_tools = DatabaseTools(db_connection="my_db")
-
-agent = Agent(
-    name="DB-Agent",
-    instructions="You can interact with the database",
-    model="claude-sonnet-4-5",
-    function_tools=[db_tools]
-)
-```
-
-#### Built-in Code Tools
-
-Stark includes a comprehensive `CodeTool` class for file operations:
-
-```python
-from stark import Agent, Runner
-from stark.tools import CodeTool
-
-code_tool = CodeTool(workspace_dir="./my_project")
-
-agent = Agent(
-    name="Code-Agent",
-    instructions="You can read, write, and manage files",
-    model="claude-sonnet-4-5",
-    function_tools=[code_tool]
-)
-
-result = Runner(agent).run(
-    input=[{"role": "user", "content": "Create a new Python file called app.py"}]
-)
-```
-
-### Skills System
-
-Stark supports a unique "Skills" system where you can define reusable agent capabilities using markdown files.
-
-#### Directory Structure
-
-Create a `skills` directory with subdirectories for each skill:
+### 1. Create an agent
 
 ```
-skills/
-  ├── python_expert/
-  │   └── SKILL.md
-  └── data_analyst/
-      └── SKILL.md
+agents/
+  ├── research-agent/
+  │   ├── AGENT.md          # metadata + instructions
+  │   └── find_research.py  # a script the agent can run
+  └── example-agent/
+      └── AGENT.md
 ```
 
-#### The SKILL.md Format
-
-Each skill is defined in a `SKILL.md` file with YAML frontmatter:
+`agents/research-agent/AGENT.md`:
 
 ```markdown
 ---
-name: python_expert
-description: A skill that provides Python programming expertise
+name: research-agent
+description: Researches a topic and returns findings with sources. Give it one clear research question.
+provider: anthropic
+model: claude-opus-5
+effort: medium
+max_iterations: 20
+max_output_tokens: 8192
 ---
 
-You are an expert Python programmer. You follow PEP 8 standards.
-When writing code, always include type hints and docstrings.
+# Instructions
+
+1. Run `find_research.py` with the research question as its argument whenever you are
+   asked to research a topic.
+2. If it returns nothing relevant, say so rather than inventing an answer.
+3. Report each finding with its source name.
 ```
 
-#### Loading Skills
+The frontmatter is the contract; everything below it becomes the agent's system prompt.
+
+### 2. Run it
 
 ```python
-from stark import Agent, Runner
-from stark.type import SkillConfig
+import stark
 
-# Basic skill loading
-agent = Agent(
-    name="Dev-Agent",
-    instructions="You are a senior developer.",
-    model="claude-sonnet-4-5",
-    skills=["./skills/python_expert"]  # Path to the skill folder
-)
-
-# Advanced: Customize skill execution with SkillConfig
-skill_config = SkillConfig(
-    model="gpt-4o",                    # Use a different model for skills
-    llm_provider="openai",             # Specify LLM provider for skills
-    max_iterations=50,                 # Increase iteration limit for skills
-    max_output_tokens=32000,           # Set max output tokens
-    parallel_tool_calls=True,          # Enable parallel tool execution
-    thinking_level="high",             # Set reasoning level for thinking models
-    enable_web_search=True             # Enable web search for skills
-)
-
-agent = Agent(
-    name="Dev-Agent",
-    instructions="You are a senior developer.",
-    model="claude-sonnet-4-5",
-    skills=["./skills/python_expert"],
-    skill_config=skill_config
+stark.run(
+    agents="./agents",
+    listener="cli",
+    exclude_agents=["draft-agent"],
+    instructions="You coordinate a research team. Delegate, then answer the user directly.",
 )
 ```
 
-### Advanced Skills Usage with Custom Tools
-
-Skills can have their own MCP servers and function tools by creating a `tools.py` file in the skill directory:
-
-**Directory Structure:**
-```
-skills/
-  └── web_scraper/
-      ├── SKILL.md
-      └── tools.py
-```
-
-**tools.py:**
-```python
-from stark import stark_tool
-import os
-
-@stark_tool
-def parse_html(html: str) -> str:
-    """Parse HTML content and extract text"""
-    # Your implementation
-    return "Parsed content"
-
-# Define tools dictionary
-TOOLS = {
-    "mcp": {
-        "browser": {
-            "command": "uvx",
-            "args": ["mcp-server-browser"],
-            "env": {}
-        }
-    },
-    "function": [
-        parse_html
-    ]
-}
-```
-
-When this skill is invoked, it will have access to:
-- The built-in `CodeTool` (automatically included)
-- Any MCP servers defined in `TOOLS["mcp"]`
-- Any function tools defined in `TOOLS["function"]`
-
-### Reasoning Models
-
-Stark supports reasoning (or "thinking") models like OpenAI's O1 series. You can control the reasoning effort:
-
-```python
-agent = Agent(
-    name="Thinking-Agent",
-    instructions="Solve this complex logic puzzle",
-    model="o1",
-    thinking_level="high"  # Options: "none", "low", "medium", "high"
-)
-```
-
-### Hierarchical Sub-Agents
-
-```python
-from stark import Agent, Runner
-
-# Define sub-agents
-delivery_agent = Agent(
-    name="Delivery-Agent",
-    description="Handles pizza delivery",
-    instructions="Confirm delivery details and provide tracking",
-    model="claude-sonnet-4-5"
-)
-
-pizza_agent = Agent(
-    name="Pizza-Agent",
-    description="Handles pizza preparation",
-    instructions="Prepare the pizza and call delivery agent",
-    model="claude-sonnet-4-5",
-    sub_agents=[delivery_agent]
-)
-
-# Main agent with sub-agents
-master_agent = Agent(
-    name="Master-Agent",
-    instructions="Coordinate pizza orders using available agents",
-    model="claude-sonnet-4-5",
-    sub_agents=[pizza_agent]
-)
-
-result = Runner(master_agent).run(
-    input=[{"role": "user", "content": "I want to order a pepperoni pizza"}]
-)
-
-# Access sub-agent responses
-print(result.sub_agents_response.get("Pizza-Agent"))
-print(result.sub_agents_response.get("Delivery-Agent"))
-```
-
-### Streaming Responses
-
-```python
-import asyncio
-from stark import Agent, Runner, RunnerStream, Stream
-
-async def main():
-    agent = Agent(
-        name="Streaming-Agent",
-        instructions="You are a helpful assistant",
-        model="claude-sonnet-4-5"
-    )
-
-    async for event in Runner(agent).run_stream(
-        input=[{"role": "user", "content": "Tell me a story"}]
-    ):
-        if event.type == Stream.CONTENT_CHUNK:
-            print(RunnerStream.data_dump(event), end="", flush=True)
-        
-        elif event.type == Stream.TOOL_CALLS:
-            print(f"\nTool calls: {RunnerStream.data_dump(event)}")
-        
-        elif event.type == Stream.TOOL_RESPONSE:
-            print(f"Tool response: {RunnerStream.data_dump(event)}")
-        
-        elif event.type == Stream.ITER_START:
-            print(f"\n--- Iteration {RunnerStream.data_dump(event)} ---")
-        
-        elif event.type == Stream.ITER_END:
-            print(f"\n--- Iteration Complete ---")
-        
-        elif event.type == Stream.AGENT_RUN_END:
-            print(f"\nAgent finished: {RunnerStream.data_dump(event)}")
-
-asyncio.run(main())
-```
-
-### Web Search
-
-Enable web search capabilities for your agents:
-
-```python
-from stark import Agent, Runner
-from stark.llm_providers import OPENAI, ANTHROPIC, GEMINI
-
-# OpenAI web search
-openai_agent = Agent(
-    name="Research-Agent",
-    instructions="You can search the web for information",
-    model="gpt-4o",
-    llm_provider=OPENAI,
-    enable_web_search=True
-)
-
-# Anthropic web search
-anthropic_agent = Agent(
-    name="Research-Agent",
-    instructions="You can search the web for information",
-    model="claude-sonnet-4-5",
-    llm_provider=ANTHROPIC,
-    enable_web_search=True
-)
-
-# Gemini web search
-gemini_agent = Agent(
-    name="Research-Agent",
-    instructions="You can search the web for information",
-    model="gemini-1.5-pro",
-    llm_provider=GEMINI,
-    enable_web_search=True
-)
-
-result = Runner(openai_agent).run(
-    input=[{"role": "user", "content": "What's the latest news about AI?"}]
-)
-```
-
-### Tool Approvals
-
-Implement approval workflows for sensitive operations:
-
-```python
-from stark import Agent, Runner
-
-def approve_file_deletion(tool_name: str, arguments: dict) -> bool:
-    """Approve file deletion operations"""
-    file_path = arguments.get("path", "")
-    print(f"Approve deletion of {file_path}? (y/n)")
-    return input().lower() == 'y'
-
-async def approve_api_call(tool_name: str, arguments: dict) -> bool:
-    """Async approval for API calls"""
-    print(f"Approve API call to {tool_name}? (y/n)")
-    return input().lower() == 'y'
-
-agent = Agent(
-    name="Controlled-Agent",
-    instructions="You can perform file operations",
-    model="claude-sonnet-4-5",
-    function_tools=[file_tool],
-    approvals={
-        "delete": approve_file_deletion,  # Matches tool names containing "delete"
-        "api_.*": approve_api_call,       # Regex pattern for API tools
-    }
-)
-```
-
-### Input Filtering
-
-Filter or modify input before sending to the LLM:
-
-```python
-from stark import Agent, Runner
-
-def filter_sensitive_data(messages: list) -> list:
-    """Remove sensitive information from messages"""
-    filtered = []
-    for msg in messages:
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            # Remove credit card numbers, etc.
-            content = content.replace("1234-5678-9012-3456", "[REDACTED]")
-            filtered.append({"role": msg["role"], "content": content})
-        else:
-            filtered.append(msg)
-    return filtered
-
-agent = Agent(
-    name="Secure-Agent",
-    instructions="You are a helpful assistant",
-    model="claude-sonnet-4-5",
-    model_input_hook=filter_sensitive_data
-)
-
-result = Runner(agent).run(
-    input=[{"role": "user", "content": "My card is 1234-5678-9012-3456"}]
-)
-```
-
-## API Reference
-
-### Agent
-
-The main agent class that defines the behavior and capabilities of your AI agent.
-
-```python
-Agent(
-    name: str,                                    # Agent name (required)
-    instructions: str,                            # System instructions/prompt (required)
-    model: str,                                   # LLM model to use (required)
-    description: str = "",                        # Agent description (required for sub-agents)
-    mcp_servers: Dict[str, Any] = [],            # MCP server configurations
-    function_tools: List[Callable] = [],         # Custom function tools or class instances
-    enable_web_search: bool = False,             # Enable web search capabilities
-    sub_agents: List[Agent] = [],                # Sub-agents for delegation
-    approvals: Dict[str, Callable] = None,       # Tool approval functions (regex patterns)
-    skills: List[str] = None,                    # List of paths to skill directories
-    skill_config: SkillConfig = None,            # Configuration for skill execution
-    model_input_hook: Callable = None,           # Function to modify input before LLM call
-    post_llm_hook: Callable = None,              # Function to modify response after LLM call
-    iteration_end_hook: Callable = None,         # Function to run at end of iteration (except the last iteration - Not useful for the agents with only 1 iteration)
-    parallel_tool_calls: bool = None,            # Enable parallel tool execution
-    thinking_level: str = None,                  # Reasoning effort: "none", "low", "medium", "high"
-    llm_provider: str = OPENAI,                  # LLM provider (OPENAI, ANTHROPIC, GEMINI)
-    max_iterations: int = 10,                    # Maximum iterations before stopping
-    max_output_tokens: int = None,               # Maximum tokens in response
-    trace_id: str = None                         # Trace ID for debugging
-)
-```
-
-### Runner
-
-Executes agents and manages their lifecycle.
-
-#### Synchronous Execution
-
-```python
-runner = Runner(agent)
-result = runner.run(
-    input=[{"role": "user", "content": "Hello"}]
-)
-```
-
-#### Asynchronous Execution
-
-```python
-runner = Runner(agent)
-result = await runner.run_async(
-    input=[{"role": "user", "content": "Hello"}]
-)
-```
-
-#### Streaming Execution
-
-```python
-runner = Runner(agent)
-async for event in runner.run_stream(
-    input=[{"role": "user", "content": "Hello"}]
-):
-    # Handle events
-    pass
-```
-
-### SkillConfig
-
-Configuration class for customizing skill execution behavior.
-
-```python
-from stark.type import SkillConfig
-
-skill_config = SkillConfig(
-    model: Optional[str] = None,              # Model to use for skill execution (defaults to agent's model)
-    llm_provider: Optional[str] = None,       # LLM provider for skills (defaults to agent's provider)
-    max_iterations: int = 100,                # Maximum iterations for skill execution
-    max_output_tokens: int = 64000,           # Maximum output tokens for skills
-    parallel_tool_calls: bool = True,         # Enable parallel tool calls in skills
-    thinking_level: Optional[str] = None,     # Reasoning level: \"none\", \"low\", \"medium\", \"high\"
-    enable_web_search: bool = False           # Enable web search for skills
-)
-```
-
-**Use Case**: When you want skills to use different models or have different execution parameters than the main agent.
-
-### RunContext
-
-The response object returned by agent execution.
-
-```python
-class RunContext:
-    messages: List[Dict[str, Any]]              # Complete conversation history
-    output: str                                 # Final output of the agent
-    iterations: int                             # Number of iterations executed
-    subagents_messages: Dict[str, List]         # Messages from all sub-agents (typically empty for Single Agent or Master Agent)
-    subagents_response: Dict[str, Any]          # Responses from all sub-agents (typically empty for Single Agent)
-    error: Optional[str]                        # Error message if execution failed
-    max_iterations_reached: bool                # Whether max iterations was hit
-    run_cost: float                             # Total cost of the run in USD
-```
-
-### Stream Events
-
-When using streaming, you'll receive different event types:
-
-**Runner Events:**
-- `Stream.ITER_START`: Iteration started (data: iteration number)
-- `Stream.TOOL_RESPONSE`: Tool response received (data: ToolCallResponse)
-- `Stream.ITER_END`: Iteration completed (data: IterationData)
-- `Stream.AGENT_RUN_END`: Agent execution finished (data: RunContext)
-
-**Provider Events (from LLM):**
-- `Stream.REASONING_CHUNK`: Reasoning/thinking content chunk (for models with thinking capability)
-- `Stream.CONTENT_CHUNK`: Content chunk received (data: string)
-- `Stream.TOOL_CALLS`: Tool calls made (data: list of tool calls)
-- `Stream.MODEL_STREAM_COMPLETED`: Provider streaming completed (data: ProviderResponse)
-
-### Utility Classes
-
-#### Util
-
-Helper utilities for common operations:
-
-```python
-from stark import Util
-
-# 1. Parse JSON from LLM responses (handles markdown code blocks)
-data = Util.load_json('```json\n{"key": "value"}\n```')
-# Returns: {"key": "value"}
-
-# 2. Create partial functions with pre-filled arguments
-from functools import partial
-
-def my_approval_func(tool_name: str, args: dict, user_id: int):
-    print(f"User {user_id}: Approve {tool_name}?")
-    return True
-
-# Pass function with pre-filled user_id
-approval_with_user = Util.pass_function_with_args(my_approval_func, user_id=123)
-# Now approval_with_user only needs tool_name and args
-```
-
-#### RunnerStream
-
-Helper methods for working with stream events:
-
-```python
-from stark import RunnerStream
-
-# Create stream events
-event = RunnerStream.iteration_start(1)
-event = RunnerStream.tool_response(tool_response)
-event = RunnerStream.iteration_end(iteration_data)
-event = RunnerStream.agent_run_end(run_response)
-
-# Dump event data to string
-data_str = RunnerStream.data_dump(event)
-```
-
-## MCP Server Configuration
-
-MCP servers extend agent capabilities by providing additional tools and resources.
-
-### Stdio-based MCP Server
-
-```python
-mcp_servers = {
-    "server-name": {
-        "command": "uvx",              # Command to run
-        "args": ["mcp-server-package"], # Arguments
-        "env": {                        # Environment variables
-            "API_KEY": "your-key"
-        }
-    }
-}
-```
-
-### Multiple MCP Servers
-
-```python
-mcp_servers = {
-    "jira": {
-        "command": "uvx",
-        "args": ["mcp-atlassian"],
-        "env": {
-            "JIRA_URL": os.environ.get("JIRA_URL"),
-            "JIRA_USERNAME": os.environ.get("JIRA_EMAIL"),
-            "JIRA_API_TOKEN": os.environ.get("JIRA_TOKEN")
-        }
-    },
-    "slack": {
-        "command": "uvx",
-        "args": ["mcp-slack"],
-        "env": {
-            "SLACK_BOT_TOKEN": os.environ.get("SLACK_BOT_TOKEN")
-        }
-    }
-}
-```
-
-## Function Tools
-
-### Using the `@stark_tool` Decorator
-
-The `@stark_tool` decorator automatically generates JSON schemas from Python type hints:
-
-```python
-from stark import stark_tool
-from typing import List
-
-@stark_tool
-def my_tool(
-    query: str,                    # Required parameter
-    limit: int = 10,               # Optional with default
-    tags: List[str] = None,        # Optional list
-    include_metadata: bool = False # Optional boolean
-) -> str:
-    """
-    Description of what the tool does.
-    This docstring becomes the tool description.
-    """
-    # Your implementation
-    return "result"
-```
-
-**Supported Types:**
-- `str` → string
-- `int` → integer
-- `float` → number
-- `bool` → boolean
-- `dict` → object
-- `List[T]` → array with items of type T
-
-### Class-Based Tools
-
-Organize related tools into classes:
-
-```python
-from stark import stark_tool
-
-class MyTools:
-    def __init__(self, config):
-        self.config = config
-    
-    @stark_tool
-    def tool_one(self, param: str) -> str:
-        """First tool description"""
-        return f"Result: {param}"
-    
-    @stark_tool
-    def tool_two(self, value: int) -> str:
-        """Second tool description"""
-        return f"Value: {value}"
-
-# Use the class instance
-tools = MyTools(config="my_config")
-agent = Agent(
-    name="Agent",
-    instructions="Instructions",
-    model="claude-sonnet-4-5",
-    function_tools=[tools]
-)
-```
-
-### Built-in CodeTool
-
-The `CodeTool` class provides comprehensive file and shell operations:
-
-```python
-from stark.tools import CodeTool
-
-code_tool = CodeTool(workspace_dir="./project")
-
-# Available methods:
-# - read(path, encoding='utf-8')
-# - write(path, content, create_dirs=True)
-# - update(path, search, replace, count=-1)
-# - delete(path, recursive=False)
-# - create_directory(path, parents=True)
-# - list_directory(path=".", pattern="*", recursive=False)
-# - move(source, destination)
-# - copy(source, destination, recursive=True)
-# - shell_exec(cmd, dir_path=None, timeout=30)
-```
-
-## Advanced Usage
-
-### LLM Providers
-
-```python
-from stark import Agent, Runner
-from stark.llm_providers import OPENAI, ANTHROPIC, GEMINI
-
-# OpenAI
-openai_agent = Agent(
-    name="OpenAI-Agent",
-    instructions="You are a helpful assistant",
-    model="gpt-4o",
-    llm_provider=OPENAI
-)
-
-# Anthropic
-anthropic_agent = Agent(
-    name="Anthropic-Agent",
-    instructions="You are a helpful assistant",
-    model="claude-sonnet-4-5",
-    llm_provider=ANTHROPIC
-)
-
-# Gemini
-gemini_agent = Agent(
-    name="Gemini-Agent",
-    instructions="You are a helpful assistant",
-    model="gemini-1.5-pro",
-    llm_provider=GEMINI
-)
-```
-
-### Parallel Tool Calls
-
-Enable parallel execution of multiple tools:
-
-```python
-agent = Agent(
-    name="Parallel-Agent",
-    instructions="You can call multiple tools in parallel",
-    model="claude-sonnet-4-5",
-    parallel_tool_calls=True,
-    function_tools=[tool1, tool2, tool3]
-)
-```
-
-### Iteration Control
-
-```python
-agent = Agent(
-    name="Controlled-Agent",
-    instructions="You are a helpful assistant",
-    model="claude-sonnet-4-5",
-    max_iterations=5  # Limit to 5 iterations
-)
-
-result = Runner(agent).run(input=[{"role": "user", "content": "Hello"}])
-
-if result.max_iterations_reached:
-    print("Warning: Agent reached maximum iterations!")
-```
-
-### Token Limits
-
-Control the maximum output tokens:
-
-```python
-agent = Agent(
-    name="Limited-Agent",
-    instructions="You are a helpful assistant",
-    model="claude-sonnet-4-5",
-    max_output_tokens=1000  # Limit response to 1000 tokens
-)
-```
-
-### Tracing and Debugging
-
-Use trace IDs to track agent execution:
-
-```python
-import uuid
-
-agent = Agent(
-    name="Traced-Agent",
-    instructions="You are a helpful assistant",
-    model="claude-sonnet-4-5",
-    trace_id=str(uuid.uuid4())
-)
-
-result = Runner(agent).run(input=[{"role": "user", "content": "Hello"}])
-print(f"Trace ID: {agent.get_trace_id()}")
-```
-
-### Tool Naming Conventions
-
-Stark automatically prefixes tool names to avoid conflicts and identify tool types:
-
-| Tool Type | Prefix | Example |
-|-----------|--------|---------|
-| Function Tools | `st___` | `st___search_database` |
-| Class-Based Tools | `ClassName___` | `DatabaseTools___search` |
-| Sub-Agents | `sub_agent__` | `sub_agent__Delivery-Agent` |
-| Skills | `skill___` | `skill___python_expert` |
-| MCP Tools | (no prefix) | `slack_send_message` |
-
-These prefixes are handled internally and you don't need to use them when defining tools. The agent automatically recognizes and routes tool calls to the appropriate handler.
-
-### Logger
-
-Stark includes a built-in logger for debugging:
-
-```python
-from stark import logger
-
-# Use the logger in your code
-logger.debug("Debug message")
-logger.info("Info message")
-logger.warning("Warning message")
-logger.error("Error message")
-
-# The logger includes file name and line numbers automatically
-# Output format: YYYY-MM-DD HH:MM:SS - LEVEL - message (filename.py:123)
-```
-
-The logger is pre-configured with a StreamHandler and outputs to console with timestamps and source location.
-
-## Best Practices
-
-1. **Clear Instructions**: Provide clear, specific instructions to guide agent behavior
-2. **Tool Descriptions**: Write detailed descriptions for function tools and sub-agents
-3. **Error Handling**: Always wrap agent execution in try-except blocks
-4. **Iteration Limits**: Set appropriate `max_iterations` to prevent infinite loops
-5. **Resource Cleanup**: MCP server connections are automatically cleaned up
-6. **Streaming**: Use streaming for long-running tasks to provide real-time feedback
-7. **Sub-Agent Descriptions**: Always provide descriptions for sub-agents so the parent agent knows when to use them
-8. **Type Hints**: Use type hints with `@stark_tool` for automatic schema generation
-9. **Approvals**: Implement approval workflows for sensitive operations
-10. **Input Filtering**: Use input filters to sanitize or modify data before LLM processing
-
-## Error Handling
-
-```python
-from stark import Agent, Runner
-
-try:
-    agent = Agent(
-        name="Error-Handling-Agent",
-        instructions="You are a helpful assistant",
-        model="claude-sonnet-4-5"
-    )
-    
-    result = Runner(agent).run(
-        input=[{"role": "user", "content": "Hello"}]
-    )
-    
-    if result.max_iterations_reached:
-        print("Warning: Maximum iterations reached")
-    
-except Exception as e:
-    print(f"Error: {e}")
-    # Handle error appropriately
+Or from the terminal:
+
+```bash
+export ANTHROPIC_API_KEY=...
+stark --agents ./agents --listener cli
 ```
 
 ## Examples
 
-Check out the `examples/` directory for more comprehensive examples:
+[`examples/`](examples/README.md) has five runnable programs over one shared agent folder:
+the quickstart, custom instructions with `exclude_agents`, a Slack bot, direct embedding
+with a custom `ResponseSink`, and an offline walkthrough.
 
-- Basic agent usage
-- MCP server integration
-- Function tools and class-based tools
-- Hierarchical sub-agents
-- Streaming responses
-- Web search integration
-- Tool approvals and input filtering
+Start with the offline one — it needs **no API key** and no network, because only the model
+is faked. Real discovery, a real subprocess, and a real MCP server all take part:
 
-## Requirements
+```bash
+python examples/05_offline_walkthrough.py
+```
 
-- Python 3.10 or higher
-- Dependencies are automatically installed with the package
+The `agents/` folder at the repo root is the default target of a bare `stark.run()`;
+`examples/agents/` is a richer set covering MCP servers, scripts, and every discovery rule.
 
-## Contributing
+## `stark.run()`
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
+```python
+def run(
+    agents: str = "./agents",
+    listener: str = "cli",              # "cli" | "slack"
+    exclude_agents: list[str] | None = None,
+    instructions: str = "You're an helpful assistant. Use any relevant tool at your disposal to answer the user query."
+) -> None
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `agents` | Root folder holding one subdirectory per agent. |
+| `listener` | `"cli"` for an interactive prompt, `"slack"` for mentions and DMs over Socket Mode. |
+| `exclude_agents` | Directory names inside `agents` to skip during discovery. |
+| `instructions` | The master system prompt for the orchestration loop. |
+
+`run()` blocks until interrupted. To embed it in an existing event loop, use
+`await stark.run_async(...)` — same arguments.
+
+## The AGENT.md schema
+
+### Mandatory
+
+| Key | Example |
+| --- | --- |
+| `name` | `research-agent` |
+| `description` | What the agent does — the orchestrator routes on this, so make it specific. |
+| `provider` | `anthropic`, `openai`, `gemini`, … (any LiteLLM provider) |
+| `model` | `claude-opus-5` |
+
+If any of these is missing, Stark logs a warning and skips that agent. The rest keep loading.
+
+### Optional
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `effort` | `medium` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
+| `max_iterations` | `100` | Tool-calling turns before the agent stops. |
+| `max_output_tokens` | `4096` | Output cap per turn. |
+| `base_url` | `""` | Override the provider endpoint (e.g. a LiteLLM proxy). |
+| `api_key` | `""` | Override the provider key for this agent. |
+| `mcp` | *(none)* | A **list** of MCP servers — see below. |
+
+String values support `${VAR}` and `${VAR:-fallback}` environment expansion, so secrets
+stay out of the file:
+
+```yaml
+api_key: ${RESEARCH_AGENT_KEY}
+base_url: ${LLM_PROXY_URL:-https://api.anthropic.com}
+```
+
+### Discovery rules
+
+1. Every agent directory must have an `AGENT.md` **at its root** — nested ones are not found.
+2. A directory without `AGENT.md` is skipped silently.
+3. A directory named in `exclude_agents` is skipped.
+4. Missing mandatory metadata → warning, skip that agent.
+5. Duplicate `name` values → the first one wins, the rest are skipped with a warning.
+
+Only a missing `agents` directory is fatal.
+
+## MCP servers
+
+`mcp:` is a list of servers. Stark walks it and starts each entry whose `enable` is true.
+
+```yaml
+---
+name: jira-agent
+description: Creates and transitions Jira tickets, and posts to Slack.
+provider: anthropic
+model: claude-opus-5
+mcp:
+  - name: slack
+    enable: true
+    command: uvx
+    args: ["mcp-slack"]
+    exclude: ["send_message"]              # deny-list
+
+  - name: atlassian
+    enable: true
+    command: uvx
+    args: ["mcp-atlassian"]
+    env:
+      JIRA_URL: ${JIRA_URL}
+      JIRA_USERNAME: ${JIRA_EMAIL}
+      JIRA_API_TOKEN: ${JIRA_TOKEN}
+
+  - name: remote
+    enable: false                          # parked: defined, never started
+    transport: streamable_http
+    url: https://mcp.example.com/mcp
+    headers:
+      Authorization: Bearer ${MCP_TOKEN}
+    include: ["search", "fetch"]           # allow-list, wins over exclude
+---
+```
+
+| Field | Applies to | Notes |
+| --- | --- | --- |
+| `name` | both | **Required.** Identifies the server in logs and errors. Must be unique per agent. |
+| `enable` | both | Defaults to `true` — listing a server is intent to use it. Set `false` to keep an entry without starting it. |
+| `transport` | both | `stdio` (default) or `streamable_http`. |
+| `command`, `args`, `env` | stdio | **`command` required.** `env` merges over a minimal safe environment; cwd is the agent's directory. |
+| `url`, `headers` | streamable_http | **`url` required.** |
+| `include` / `exclude` | both | Filter which tools reach the model. `include` takes precedence. |
+
+Omitting `mcp:` entirely means the agent has no MCP servers — nothing is spawned
+speculatively. Enabled servers start once during boot and are reused for every query.
+
+Malformed entries never break discovery: an entry missing `name`, a stdio entry missing
+`command`, an unknown `transport`, or a duplicate name is logged and skipped, and the agent
+loads with whatever remains. A server that fails to *start* is likewise logged and dropped.
+
+> The MCP server runs as a subprocess, so `command` must be an interpreter or binary that
+> has the server's own dependencies installed. Its working directory is the agent's folder,
+> which is why `args: ["server.py"]` resolves.
+
+## Built-in workspace tools
+
+Every agent gets three tools scoped to its own directory. Paths are resolved and checked,
+so an agent cannot reach outside its folder.
+
+| Tool | Purpose |
+| --- | --- |
+| `workspace_list` | List the agent's files, optionally by glob. |
+| `workspace_read` | Read one of its text files. |
+| `workspace_run` | Run one of its scripts and return exit code, stdout, and stderr. |
+
+`workspace_run` executes `.py` files on the current interpreter and any other executable
+directly, with a 120s default timeout (900s max). This is what makes
+"run `find_research.py` when asked to research something" work with no glue code.
+
+## How a query flows
+
+```
+user query
+   │
+   ├─ orchestrator (master instructions + agent roster)
+   │     │
+   │     ├─ agent__research-agent ─┐   spawned in parallel, each with its own
+   │     └─ agent__example-agent ──┤   context, model, tools and budgets
+   │                               │
+   │     ┌─────────────────────────┘
+   │     │  agent results returned as tool output
+   │     ▼
+   └─ final answer streamed to the listener
+```
+
+Each agent runs its own tool-calling loop and sees only the task it was handed — never the
+orchestrator's conversation. That keeps contexts small and makes the roster composable. The
+orchestrator can chain agents by passing one's findings into another's `context` field.
+
+## Configuring the orchestrator
+
+`run()` has a fixed signature, so the orchestration loop's own model comes from the
+environment. Anthropic is the default.
+
+| Variable | Default |
+| --- | --- |
+| `STARK_PROVIDER` | `anthropic` |
+| `STARK_MODEL` | `claude-opus-5` |
+| `STARK_EFFORT` | `medium` |
+| `STARK_MAX_ITERATIONS` | `100` |
+| `STARK_MAX_OUTPUT_TOKENS` | `4096` |
+| `STARK_BASE_URL` | *(provider default)* |
+| `STARK_API_KEY` | *(provider default)* |
+
+Provider credentials themselves follow LiteLLM's conventions — `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, and so on.
+
+## Listeners
+
+### CLI
+
+```bash
+stark --agents ./agents
+```
+
+Streams the answer as it generates, and prints a dim progress line per delegation and tool
+call. `/agents` lists the roster, `/exit` quits.
+
+Each query closes with a summary line — wall-clock time first, then whatever else the run
+produced:
+
+```
+stark › EMEA Q2 sales were $4,480,000; top product Atlas Pro.
+  · 4.12s · 2 iteration(s) · 1 agent call(s) · $0.0122
+```
+
+The elapsed time covers the whole query: every model turn, delegation and tool call. It is
+reported even when the query fails, so a slow failure is still visible. Cost and agent
+counts are omitted when they are zero. This footer is CLI-only — Slack replies are
+unchanged.
+
+### Slack
+
+```bash
+export SLACK_BOT_TOKEN=xoxb-...   # bot token
+export SLACK_APP_TOKEN=xapp-...   # app-level token, Socket Mode enabled
+stark --agents ./agents --listener slack
+```
+
+Responds to `@mentions` in channels and to direct messages, replying in-thread. It posts a
+placeholder immediately and edits it as the answer streams in. Subscribe your app to the
+`app_mention` and `message.im` events.
+
+Both tokens must be present or startup fails with a clear error before any MCP server boots.
+
+## CLI reference
+
+```
+stark [--agents PATH] [--listener {cli,slack}] [--exclude NAME]... [--instructions TEXT] [--verbose]
+```
+
+`python -m stark` works identically.
+
+## Python API
+
+Beyond `run()`, the pieces are importable if you want to embed them:
+
+```python
+from stark import Orchestrator, Registry, discover_agents, parse_agent_file
+
+agents = discover_agents("./agents", exclude_agents=["wip-agent"])
+
+registry = await Registry.create("./agents")
+try:
+    orchestrator = Orchestrator(registry, "Master instructions.", stark.orchestrator_model())
+    result = await orchestrator.handle(stark.Message(text="..."), my_sink)
+    print(result.output, result.cost, result.agent_results)
+finally:
+    await registry.aclose()   # must run in the task that created the registry
+```
+
+`RunResult` carries `output`, `iterations`, `cost`, `error`, `max_iterations_reached`, and
+an `agent_results` list of per-agent `AgentResult` records.
+
+To send output somewhere Stark does not support yet, implement `ResponseSink` (`chunk`,
+`final`, `error`, and optionally `event` and `status`) and pass it to `Orchestrator.handle`.
+
+## Layout
+
+```
+src/stark/
+├── runtime.py          # run() / run_async(): wires the three startup steps together
+├── types.py            # AgentConfig, ModelConfig, Completion, RunResult, …
+├── parsers/            # frontmatter, AGENT.md validation, directory discovery
+├── mcp/                # stdio + streamable-HTTP clients, per-agent manager
+├── llm/                # LiteLLM wrapper: request building, streaming, cost
+├── orchestration/      # registry, per-agent runner, master loop
+├── listeners/          # base contracts, cli, slack
+└── tools/              # the built-in workspace toolset
+```
+
+## Development
+
+```bash
+uv sync --extra dev --extra slack
+.venv/bin/python -m pytest
+```
+
+The suite covers discovery and validation, MCP config parsing, live MCP integration
+against a real stdio server, the workspace sandbox, Slack dispatch, and the full
+orchestration loop against a stubbed model — no network calls.
 
 ## License
 
-See LICENSE file for details.
-
-## Support
-
-For issues and questions, please open an issue on the GitHub repository.
+Apache-2.0. See [LICENSE](LICENSE).

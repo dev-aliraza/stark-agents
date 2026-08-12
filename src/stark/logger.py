@@ -1,22 +1,32 @@
 import logging
+import sys
 
-class StarkLogger:
+LOGGER_NAME = "stark"
 
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.DEBUG)
-        self.logger.addHandler(self.__get_stream_handler())
+_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
+_DATEFMT = "%H:%M:%S"
 
-    def __get_stream_handler(self) -> logging.StreamHandler:
-        stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(logging.DEBUG)
-        stream_handler.setFormatter(logging.Formatter(
-            fmt="%(asctime)s - %(levelname)-8s - %(message)s    (%(filename)s:%(lineno)d)",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        ))
-        return stream_handler
-    
-    def get_logger(self) -> logging.Logger:
-        return self.logger
 
-logger: logging.Logger = StarkLogger().get_logger()
+def _build_logger() -> logging.Logger:
+    log = logging.getLogger(LOGGER_NAME)
+    # Attach a handler so the CLI has output out of the box, but leave propagation on
+    # so a host application's logging config (and pytest's caplog) still sees records.
+    if not log.handlers and not logging.getLogger().handlers:
+        handler = logging.StreamHandler(stream=sys.stderr)
+        handler.setFormatter(logging.Formatter(fmt=_FORMAT, datefmt=_DATEFMT))
+        log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    return log
+
+
+logger: logging.Logger = _build_logger()
+
+
+def configure_logging(level: int | str = logging.INFO) -> None:
+    """Set the verbosity of the `stark` logger."""
+    logger.setLevel(level)
+
+
+def get_logger(suffix: str) -> logging.Logger:
+    """Return a child logger, e.g. get_logger("mcp") -> "stark.mcp"."""
+    return logging.getLogger(f"{LOGGER_NAME}.{suffix}")
