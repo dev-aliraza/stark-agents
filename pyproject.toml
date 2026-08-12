@@ -1,6 +1,6 @@
 [project]
 name = "stark-agents"
-version = "0.3.0"
+version = "1.0.0"
 description = "A lightweight Python ADK for discovering and orchestrating multi-agent workflows"
 dynamic = ["readme"]
 license = "Apache-2.0"
