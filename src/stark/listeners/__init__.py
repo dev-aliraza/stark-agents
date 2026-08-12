@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..config import Config
 from ..errors import ListenerError
 from .base import Handler, Listener, Message, ResponseSink
 
@@ -29,12 +30,18 @@ def validate_listener(kind: str) -> str:
     return normalized
 
 
-def build_listener(kind: str, handler: Handler, **options) -> Listener:
+def build_listener(
+    kind: str,
+    handler: Handler,
+    config: Config | None = None,
+    **options,
+) -> Listener:
     """Instantiate a listener by name.
 
     Slack is imported lazily so the CLI path never needs slack-bolt installed.
     """
     normalized = (kind or "").strip().lower()
+    settings = Config.coerce(config)
 
     if normalized == CLI:
         from .cli import CLIListener
@@ -44,7 +51,7 @@ def build_listener(kind: str, handler: Handler, **options) -> Listener:
     if normalized == SLACK:
         from .slack import SlackListener
 
-        return SlackListener(handler)
+        return SlackListener(handler, settings.slack)
 
     raise ListenerError(
         f"unknown listener '{kind}'; expected one of {', '.join(SUPPORTED)}"

@@ -8,11 +8,13 @@ starts their MCP servers, and serves queries through a CLI or Slack listener:
     stark.run(agents="./agents", listener="cli")
 """
 
+from .config import Config, ConfigError, SlackConfig
 from .listeners import Listener, Message, ResponseSink
 from .logger import configure_logging, logger
-from .orchestration import AgentRunner, Orchestrator, Registry
+from .orchestration import AgentRunner, Orchestrator, Registry, ScriptPhase, ScriptRunner
 from .parsers import discover_agents, parse_agent_file
 from .runtime import orchestrator_model, run, run_async
+from .triggers import TriggerRule, TriggerRuleError
 from .types import (
     DEFAULT_INSTRUCTIONS,
     AgentConfig,
@@ -20,6 +22,7 @@ from .types import (
     MCPServerConfig,
     ModelConfig,
     RunResult,
+    ScriptResult,
 )
 
 __all__ = [
@@ -27,6 +30,9 @@ __all__ = [
     "run_async",
     "orchestrator_model",
     "DEFAULT_INSTRUCTIONS",
+    "Config",
+    "SlackConfig",
+    "ConfigError",
     "AgentConfig",
     "AgentResult",
     "ModelConfig",
@@ -35,6 +41,11 @@ __all__ = [
     "Registry",
     "Orchestrator",
     "AgentRunner",
+    "ScriptPhase",
+    "ScriptRunner",
+    "ScriptResult",
+    "TriggerRule",
+    "TriggerRuleError",
     "Listener",
     "Message",
     "ResponseSink",

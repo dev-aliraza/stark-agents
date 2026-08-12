@@ -40,6 +40,9 @@ Then ask something that needs two agents, so you can watch them run in parallel:
 
 ```
 examples/agents/
+├── ticket-opener/        type: script — a triggerRule fires run(), no LLM at all
+│   ├── AGENT.md
+│   └── open_ticket.py
 ├── sales-agent/          runs a local script through workspace_run
 │   ├── AGENT.md
 │   └── query_sales.py
@@ -54,10 +57,18 @@ examples/agents/
     └── NOTES.md
 ```
 
+The `=====` marker in a message is what fires `ticket-opener`, so try:
+
+> ===== ArgoCD is down in prod =====
+
+You'll see the script step run, its ticket posted as its own message, and then the
+orchestrator answering with that ticket already in its context.
+
 Between them they cover every discovery rule and both kinds of tool:
 
 | Agent | Demonstrates |
 | --- | --- |
+| `ticket-opener` | A `type: script` agent: a `triggerRule` fires `open_ticket.py` with **no model involved**, `priority: 200` puts it ahead of the default band, and `send_output: true` posts its result to the user |
 | `sales-agent` | An `AGENT.md` instructing the agent to run its own script; `workspace_run` executes it in a subprocess, sandboxed to the agent's directory |
 | `inventory-agent` | An `mcp:` list with one enabled stdio server and one parked (`enable: false`) HTTP server, `${PYTHON:-python3}` env expansion, and `exclude:` hiding a destructive tool from the model |
 | `writer-agent` | An agent that needs no tools, driven purely by its instructions |

@@ -42,12 +42,69 @@ async def test_discovery_matches_the_documented_folder():
     names = {agent.name for agent in discover_agents(AGENTS)}
 
     # scratch/ has no AGENT.md, so it is skipped silently.
-    assert names == {"sales-agent", "inventory-agent", "writer-agent", "draft-agent"}
+    assert names == {
+        "sales-agent",
+        "inventory-agent",
+        "writer-agent",
+        "draft-agent",
+        "ticket-opener",
+    }
+
+
+async def test_the_example_script_agent_is_wired_as_documented():
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    ticket = agents["ticket-opener"]
+
+    assert ticket.is_script
+    assert ticket.script == "open_ticket.py"
+    assert (ticket.priority, ticket.send_output) == (200, True)
+    assert ticket.trigger_rule is not None
+    # A script agent needs no model.
+    assert (ticket.provider, ticket.model) == ("", "")
+
+    assert ticket.triggered_by({"text": "===== outage =====", "channel": "C0SUP"}) is True
+    assert ticket.triggered_by({"text": "ordinary question", "channel": "C0SUP"}) is False
+    # The rule reads only `text`, so it fires in any channel and under the CLI too.
+    assert ticket.trigger_rule.fields() == {"text"}
+    assert ticket.triggered_by({"text": "===== outage =====", "channel": None}) is True
+
+
+async def test_the_example_script_agent_runs():
+    from stark.orchestration import ScriptRunner, load_entry_point
+
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    ticket = agents["ticket-opener"]
+    runner = ScriptRunner(ticket, load_entry_point(ticket))
+
+    result = await runner.run(
+        {"text": "===== ArgoCD is down =====", "user": "U1", "channel": "C1",
+         "thread": "1.0", "meta": {}, "agent": "ticket-opener", "prior_outputs": []}
+    )
+
+    assert result.succeeded
+    assert "SUPPORT-" in result.output
+    assert "ArgoCD is down" in result.output
+
+
+async def test_the_example_script_agent_is_idempotent_per_thread():
+    """Same thread must yield the same reference, so a Slack redelivery cannot duplicate."""
+    from stark.orchestration import ScriptRunner, load_entry_point
+
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    ticket = agents["ticket-opener"]
+    runner = ScriptRunner(ticket, load_entry_point(ticket))
+
+    payload = {"text": "===== x =====", "user": "U1", "channel": "C1", "thread": "1.0",
+               "meta": {}, "agent": "ticket-opener", "prior_outputs": []}
+    first = await runner.run(dict(payload))
+    second = await runner.run(dict(payload))
+
+    assert first.output == second.output
 
 
 async def test_exclude_agents_drops_the_draft():
     names = {agent.name for agent in discover_agents(AGENTS, exclude_agents=["draft-agent"])}
-    assert names == {"sales-agent", "inventory-agent", "writer-agent"}
+    assert names == {"sales-agent", "inventory-agent", "writer-agent", "ticket-opener"}
 
 
 async def test_frontmatter_is_wired_as_documented():

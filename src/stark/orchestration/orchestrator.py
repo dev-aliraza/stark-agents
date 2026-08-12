@@ -6,7 +6,7 @@ from typing import Any
 from ..listeners.base import Message, ResponseSink
 from ..llm import LLMClient
 from ..logger import get_logger
-from ..types import ModelConfig, RunResult, ToolCall
+from ..types import ModelConfig, RunResult, ScriptResult, ToolCall
 from .agent_runner import AgentRunner
 from .registry import Registry
 
@@ -37,7 +37,8 @@ class Orchestrator:
 
     def system_prompt(self) -> str:
         sections = [self.instructions.strip()] if self.instructions.strip() else []
-        if self.registry.agents:
+        # Only llm agents are delegatable, so only they belong in the prompt.
+        if self.registry.has_llm_agents:
             sections.append(f"## Available agents\n{self.registry.roster()}")
             sections.append(_DELEGATION_RULES)
         else:
@@ -46,12 +47,44 @@ class Orchestrator:
             )
         return "\n\n".join(sections)
 
-    async def handle(self, message: Message, sink: ResponseSink) -> RunResult:
-        """Run one query to completion, streaming the answer to the sink."""
-        result = RunResult()
+    @staticmethod
+    def _user_content(message: Message, script_results: list[ScriptResult]) -> str:
+        """The first user turn: the query, plus anything the script phase produced."""
+        if not script_results:
+            return message.text
+
+        sections = [
+            message.text,
+            "",
+            "## Results from automated steps",
+            "These ran deterministically before you, for this message.",
+            "",
+        ]
+        sections.extend(item.as_context() for item in script_results)
+        sections.append("")
+        sections.append(
+            "Use these results. Anything marked as already shown to the user must not be "
+            "repeated — add only what is missing, and keep it short if there is nothing "
+            "substantive to add."
+        )
+        return "\n".join(sections)
+
+    async def handle(
+        self,
+        message: Message,
+        sink: ResponseSink,
+        script_results: list[ScriptResult] | None = None,
+    ) -> RunResult:
+        """Run one query to completion, streaming the answer to the sink.
+
+        `script_results` are outcomes from the script phase that already ran. They are
+        given to the model as context, labelled with whether the user has already seen
+        them, so it builds on them instead of repeating them.
+        """
+        result = RunResult(script_results=list(script_results or []), orchestrator_ran=True)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt()},
-            {"role": "user", "content": message.text},
+            {"role": "user", "content": self._user_content(message, result.script_results)},
         ]
         tools = self.registry.delegation_tools()
 

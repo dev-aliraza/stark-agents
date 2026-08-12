@@ -8,6 +8,7 @@ import pytest
 
 from stark.errors import ListenerError
 from stark.listeners import validate_listener
+from stark.config import SlackConfig
 from stark.listeners.slack import (
     DONE_EMOJI,
     FAILED_EMOJI,
@@ -58,18 +59,18 @@ async def drain() -> None:
 
 
 @pytest.fixture()
-def instant_flush(monkeypatch):
-    """Collapse the coalescing cooldown.
+def instant_flush() -> SlackConfig:
+    """A config with no coalescing cooldown.
 
-    Needed only by tests that assert a mid-sequence transition: draining between
-    two events starts the real cooldown, so the second render would otherwise wait
-    UPDATE_INTERVAL seconds.
+    Needed only by tests that assert a mid-sequence transition: draining between two
+    events starts the real cooldown, so the second render would otherwise wait
+    `update_interval` seconds.
     """
-    monkeypatch.setattr("stark.listeners.slack.UPDATE_INTERVAL", 0)
+    return SlackConfig(update_interval=0)
 
 
-def sink_for(client: FakeSlackClient) -> SlackSink:
-    return SlackSink(client, channel="C1", thread_ts="T1")
+def sink_for(client: FakeSlackClient, config: SlackConfig | None = None) -> SlackSink:
+    return SlackSink(client, channel="C1", thread_ts="T1", config=config)
 
 
 # --- the answer is never streamed -----------------------------------------------------
@@ -103,10 +104,18 @@ async def test_final_answer_is_posted_once_as_its_own_message():
     assert all(call["text"] != "EMEA Q2 was $4.48M." for call in client.updates)
 
 
-async def test_empty_answer_falls_back_to_a_placeholder():
+async def test_empty_answer_posts_nothing_and_settles_the_progress():
+    """Silence is valid: it's what happens when no llm agents are registered."""
     client = FakeSlackClient()
-    await sink_for(client).final("   ")
-    assert "no output" in client.answer
+    sink = sink_for(client)
+
+    await sink.status("working")
+    await sink.final("   ")
+
+    # No answer message at all — the settled progress message is the whole reply.
+    assert len(client.posted) == 1
+    assert client.progress == f"{DONE_EMOJI} ~{STARTING_LABEL}~"
+    assert sink.answer_ts is None
 
 
 # --- progress streaming: loading, then struck through ---------------------------------
@@ -114,7 +123,7 @@ async def test_empty_answer_falls_back_to_a_placeholder():
 
 async def test_agent_step_shows_loading_then_struck_done(instant_flush):
     client = FakeSlackClient()
-    sink = sink_for(client)
+    sink = sink_for(client, instant_flush)
 
     await sink.event("agent_start", "sales-agent: emea q2", key="c1")
     await drain()
@@ -127,7 +136,7 @@ async def test_agent_step_shows_loading_then_struck_done(instant_flush):
 
 async def test_tool_step_shows_loading_then_struck_done(instant_flush):
     client = FakeSlackClient()
-    sink = sink_for(client)
+    sink = sink_for(client, instant_flush)
 
     await sink.event("tool", "sales-agent → workspace_run", key="c1:t1")
     await drain()
@@ -477,7 +486,7 @@ def listener_with_auth(auth_result):
     return listener
 
 
-IDENTITY = {"user": "starkbot", "user_id": "U1", "team": "Talabat"}
+IDENTITY = {"user": "starkbot", "user_id": "U1", "team": "stark"}
 
 
 async def test_rejected_token_is_reported_as_an_error(caplog):
@@ -499,7 +508,7 @@ async def test_identity_is_logged_so_you_know_which_workspace(caplog):
         await listener._log_identity()
 
     assert "starkbot" in caplog.text
-    assert "Talabat" in caplog.text
+    assert "stark" in caplog.text
     assert "scopes OK" in caplog.text
 
 

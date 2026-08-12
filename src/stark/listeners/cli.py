@@ -64,16 +64,30 @@ class CLISink(ResponseSink):
             "agent_end": "✓",
             "agent_error": "✗",
             "tool": "·",
+            "tool_end": "✓",
         }.get(kind, "·")
         self._write(self._dim(f"  {marker} {detail}"), newline=True)
+
+    async def message(self, text: str) -> None:
+        """Print a script agent's output as its own labelled block."""
+        if not text.strip():
+            return
+        if self._started:
+            self._write("", newline=True)
+            self._started = False
+        label = f"{_BOLD}script ›{_RESET} " if self.color else "script › "
+        self._write(f"\n{label}{text}", newline=True)
 
     async def final(self, text: str) -> None:
         if self._started:
             self._write("", newline=True)
             self._started = False
             return
+        # An empty answer is a valid silent outcome, not something to announce.
+        if not text.strip():
+            return
         label = f"{_BOLD}stark ›{_RESET} " if self.color else "stark › "
-        self._write(f"\n{label}{text or '(no output)'}", newline=True)
+        self._write(f"\n{label}{text}", newline=True)
 
     async def error(self, text: str) -> None:
         if self._started:

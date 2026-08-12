@@ -5,10 +5,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .triggers import TriggerRule
+
+# Agent types. `llm` is the default so existing AGENT.md files keep working.
+AGENT_TYPE_LLM = "llm"
+AGENT_TYPE_SCRIPT = "script"
+AGENT_TYPES = (AGENT_TYPE_LLM, AGENT_TYPE_SCRIPT)
+
 # Defaults for the optional AGENT.md metadata schema.
 DEFAULT_EFFORT = "medium"
 DEFAULT_MAX_ITERATIONS = 100
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
+# Script agents run in descending priority bands; agents sharing a band run together.
+DEFAULT_PRIORITY = 100
+DEFAULT_SCRIPT_TIMEOUT = 120
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-5"
@@ -53,14 +64,23 @@ class MCPServerConfig:
 
 @dataclass
 class AgentConfig:
-    """A validated agent loaded from `<agents>/<dir>/AGENT.md`."""
+    """A validated agent loaded from `<agents>/<dir>/AGENT.md`.
+
+    Two shapes share this type. An `llm` agent runs a model with tools and is offered to
+    the orchestrator. A `script` agent runs a Python `run()` function with no model at
+    all, is never offered to the orchestrator, and is reached only by its `trigger_rule`
+    (or unconditionally, when it has none).
+    """
 
     name: str
     description: str
-    provider: str
-    model: str
     instructions: str
     path: Path
+    type: str = AGENT_TYPE_LLM
+
+    # llm agents only.
+    provider: str = ""
+    model: str = ""
     effort: str = DEFAULT_EFFORT
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
@@ -68,14 +88,43 @@ class AgentConfig:
     api_key: str = ""
     mcp: list[MCPServerConfig] = field(default_factory=list)
 
+    # script agents only.
+    script: str = ""
+    priority: int = DEFAULT_PRIORITY
+    send_output: bool = False
+    timeout: int = DEFAULT_SCRIPT_TIMEOUT
+    trigger_rule: TriggerRule | None = None
+
+    @property
+    def is_script(self) -> bool:
+        return self.type == AGENT_TYPE_SCRIPT
+
+    @property
+    def is_llm(self) -> bool:
+        return self.type == AGENT_TYPE_LLM
+
     @property
     def tool_name(self) -> str:
         return f"{AGENT_TOOL_PREFIX}{slugify(self.name)}"
 
     @property
+    def script_path(self) -> Path:
+        return self.path / self.script
+
+    @property
     def enabled_mcp_servers(self) -> list[MCPServerConfig]:
         """The servers to actually start for this agent."""
         return [server for server in self.mcp if server.enable]
+
+    def triggered_by(self, values: dict[str, str | None]) -> bool:
+        """Whether this script agent should run for a message.
+
+        A script agent with no rule is unconditional: it has no other way to be reached,
+        since script agents are never exposed to the orchestrator.
+        """
+        if self.trigger_rule is None:
+            return True
+        return self.trigger_rule.matches(values)
 
 
 @dataclass
@@ -165,6 +214,36 @@ class AgentResult:
 
 
 @dataclass
+class ScriptResult:
+    """The outcome of one script agent run."""
+
+    agent: str
+    output: str = ""
+    error: str | None = None
+    priority: int = DEFAULT_PRIORITY
+    sent_to_client: bool = False
+
+    @property
+    def succeeded(self) -> bool:
+        return self.error is None
+
+    def as_context(self) -> str:
+        """How this result is described to the orchestrator.
+
+        `send_output` decides whether the user has already seen the text, and the model
+        needs to know which — otherwise it paraphrases back something already on screen.
+        """
+        if self.error:
+            return f"### {self.agent} (failed)\n{self.error}"
+        body = self.output.strip() or "(no output)"
+        if self.sent_to_client:
+            seen = "already shown to the user — do not repeat it, build on it"
+        else:
+            seen = "internal context — the user has not seen this"
+        return f"### {self.agent} ({seen})\n{body}"
+
+
+@dataclass
 class RunResult:
     """The outcome of handling one user query."""
 
@@ -174,3 +253,5 @@ class RunResult:
     error: str | None = None
     max_iterations_reached: bool = False
     agent_results: list[AgentResult] = field(default_factory=list)
+    script_results: list[ScriptResult] = field(default_factory=list)
+    orchestrator_ran: bool = False

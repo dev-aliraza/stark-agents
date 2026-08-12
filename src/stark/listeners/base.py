@@ -32,6 +32,15 @@ class ResponseSink(ABC):
     async def chunk(self, text: str) -> None:
         """Handle one incremental slice of the answer."""
 
+    async def message(self, text: str) -> None:
+        """Deliver a standalone message now, ahead of the final answer.
+
+        Used by script agents with `send_output: true`. The default forwards to `chunk`
+        so a custom sink keeps working; the CLI and Slack listeners override it to render
+        a distinct block or post a separate message.
+        """
+        await self.chunk(f"{text}\n")
+
     async def event(self, kind: str, detail: str, key: str | None = None) -> None:
         """Report progress: a tool call, or an agent starting or finishing.
 
@@ -45,7 +54,13 @@ class ResponseSink(ABC):
 
     @abstractmethod
     async def final(self, text: str) -> None:
-        """Deliver the completed answer."""
+        """Deliver the completed answer, and close out any progress display.
+
+        Empty text is a legitimate, silent outcome: it happens when no `llm` agents are
+        registered so the orchestrator never runs, and script agents have already said
+        everything there is to say. Implementations should settle their progress state
+        but post nothing.
+        """
 
     @abstractmethod
     async def error(self, text: str) -> None:

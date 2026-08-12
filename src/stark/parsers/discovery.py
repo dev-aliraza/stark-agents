@@ -70,15 +70,23 @@ def discover_agents(
 
         seen[config.name] = entry
         agents.append(config)
-        enabled = config.enabled_mcp_servers
-        logger.info(
-            "Loaded agent '%s' (%s/%s, effort=%s, mcp=%s)",
-            config.name,
-            config.provider,
-            config.model,
-            config.effort,
-            ", ".join(server.name for server in enabled) if enabled else "none",
-        )
+        if config.is_script:
+            logger.info(
+                "Loaded script agent '%s' (script=%s, priority=%s)",
+                config.name,
+                config.script,
+                config.priority,
+            )
+        else:
+            enabled = config.enabled_mcp_servers
+            logger.info(
+                "Loaded agent '%s' (%s/%s, effort=%s, mcp=%s)",
+                config.name,
+                config.provider,
+                config.model,
+                config.effort,
+                ", ".join(server.name for server in enabled) if enabled else "none",
+            )
 
     if not agents:
         logger.warning(

@@ -8,10 +8,13 @@ understand what Stark does — and a useful smoke test for a new agent folder.
 
     python examples/05_offline_walkthrough.py
 
-The scripted conversation is:
+The flow is:
 
-    orchestrator ──┬─▶ sales-agent      ──▶ runs query_sales.py       (real subprocess)
-                   └─▶ inventory-agent  ──▶ calls check_stock         (real MCP server)
+    script phase ──▶ ticket-opener       ──▶ runs open_ticket.py, no model at all
+                     (triggerRule matched, send_output posts it to the user)
+                        │
+    orchestrator ──┬─▶ sales-agent       ──▶ runs query_sales.py      (real subprocess)
+                   └─▶ inventory-agent   ──▶ calls check_stock        (real MCP server)
                         │
     orchestrator ───────┴─▶ writer-agent ──▶ turns the facts into prose
                         │
@@ -24,7 +27,7 @@ import os
 import sys
 
 import stark
-from stark import Message, Orchestrator, Registry, ResponseSink
+from stark import Message, Orchestrator, Registry, ResponseSink, ScriptPhase
 from stark.llm import LLMClient
 from stark.types import Completion, ToolCall
 
@@ -132,6 +135,10 @@ class NarratingSink(ResponseSink):
     async def chunk(self, text: str) -> None:
         print(text, end="", flush=True)
 
+    async def message(self, text: str) -> None:
+        # A script agent with send_output: true delivers through here.
+        print(f"\n\n[script output]\n{text}\n", flush=True)
+
     async def event(self, kind: str, detail: str, key: str | None = None) -> None:
         marker = {"agent_start": "→", "agent_end": "✓", "agent_error": "✗", "tool": "·"}
         print(f"\n   {marker.get(kind, '·')} {detail}", flush=True)
@@ -151,23 +158,35 @@ async def main() -> None:
     registry = await Registry.create("examples/agents", exclude_agents=["draft-agent"])
     print(f"\nDiscovered {len(registry.agents)} agents:\n{registry.roster()}\n")
 
-    for agent in registry.agents:
+    for agent in registry.llm_agents:
         tools = [
             schema["function"]["name"] for schema in registry.toolbox_for(agent).schemas()
         ]
         print(f"  {agent.name} tools: {', '.join(tools)}")
+    for agent in registry.script_agents:
+        print(f"  {agent.name} runs {agent.script} (no model)")
 
     orchestrator = Orchestrator(registry, "You are a commercial-ops coordinator.", stark.orchestrator_model())
 
-    question = "How did EMEA do in Q2, and should we reorder ATL-LITE-002?"
+    # The ===== marker is what ticket-opener's triggerRule looks for.
+    question = "===== How did EMEA do in Q2, and should we reorder ATL-LITE-002? ====="
     print(f"\n{'─' * 72}\nQ: {question}")
 
+    message = Message(text=question, user="cli")
+    sink = NarratingSink()
+
     try:
-        result = await orchestrator.handle(Message(text=question), NarratingSink())
+        # Step one: deterministic script agents, in priority bands.
+        script_phase = ScriptPhase(registry.script_agents, registry.script_runners())
+        script_results = await script_phase.run(message, sink)
+
+        # Step two: the LLM orchestrator, given what the scripts produced.
+        result = await orchestrator.handle(message, sink, script_results)
     finally:
         await registry.aclose()
 
     print(f"{'─' * 72}")
+    print(f"script agents run  : {', '.join(item.agent for item in result.script_results)}")
     print(f"orchestrator turns : {result.iterations}")
     print(f"agents used        : {', '.join(item.agent for item in result.agent_results)}")
     for item in result.agent_results:

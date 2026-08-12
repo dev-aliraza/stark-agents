@@ -23,10 +23,13 @@ Then:
 
 The bot answers @mentions in channels and direct messages, replying in-thread.
 
-The answer is not streamed. You get a live progress message — one `:loading123:` line per
-agent delegation and tool call, struck through with `:talabatdone:` as each finishes — and
-then the finished answer as its own message. Add both custom emoji to your workspace, or
-Slack renders the literal `:loading123:` text.
+The answer is not streamed. You get a live progress message — one `:hourglass:` line per
+agent delegation and tool call, struck through with `:white_check_mark:` as each finishes —
+and then the finished answer as its own message.
+
+The `config` argument below overrides those icons. All three defaults are built-in Slack
+emoji, so they work anywhere; a custom shortcode must exist in your workspace first, or
+Slack shows the literal `:name:` text.
 
 Both tokens are checked before any MCP server starts, so a missing one fails fast.
 """
@@ -49,4 +52,12 @@ stark.run(
         "sentences, or a short list when there are several figures. Use Slack mrkdwn "
         "(*bold*, `code`), never Markdown headings."
     ),
+    # Drop this block to keep the defaults (:hourglass:, :white_check_mark:, :x:).
+    config={
+        "slack": {
+            "running_emoji": ":hourglass_flowing_sand:",
+            "done_emoji": ":white_check_mark:",
+            "failed_emoji": ":x:",
+        }
+    },
 )

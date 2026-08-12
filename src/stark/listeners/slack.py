@@ -7,6 +7,14 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from ..config import (
+    DEFAULT_DONE_EMOJI,
+    DEFAULT_FAILED_EMOJI,
+    DEFAULT_RUNNING_EMOJI,
+    DEFAULT_STARTING_LABEL,
+    DEFAULT_UPDATE_INTERVAL,
+    SlackConfig,
+)
 from ..errors import ListenerError
 from ..logger import get_logger
 from .base import Handler, Listener, Message, ResponseSink
@@ -16,14 +24,13 @@ logger = get_logger("slack")
 BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"
 
-# Seconds between chat.update calls, to stay clear of Slack's ~1/second edit limit.
-UPDATE_INTERVAL = 1.2
+# Defaults, overridable per process via stark.run(config={"slack": {...}}).
+UPDATE_INTERVAL = DEFAULT_UPDATE_INTERVAL
+RUNNING_EMOJI = DEFAULT_RUNNING_EMOJI
+DONE_EMOJI = DEFAULT_DONE_EMOJI
+FAILED_EMOJI = DEFAULT_FAILED_EMOJI
+STARTING_LABEL = DEFAULT_STARTING_LABEL
 
-RUNNING_EMOJI = ":loading123:"
-DONE_EMOJI = ":talabatdone:"
-FAILED_EMOJI = ":warning:"
-
-STARTING_LABEL = "Working on it"
 MAX_LABEL_CHARS = 180
 
 # Bot-token scopes the listener needs: receive mentions, receive DMs, and reply.
@@ -58,11 +65,11 @@ class Step:
     state: str = RUNNING
     parent: str | None = None
 
-    def render(self) -> str:
+    def render(self, config: SlackConfig) -> str:
         prefix = "        ↳ " if self.parent else ""
         if self.state == RUNNING:
-            return f"{prefix}{RUNNING_EMOJI} {self.label}"
-        emoji = FAILED_EMOJI if self.state == FAILED else DONE_EMOJI
+            return f"{prefix}{config.running_emoji} {self.label}"
+        emoji = config.failed_emoji if self.state == FAILED else config.done_emoji
         # Slack mrkdwn strikethrough.
         return f"{prefix}{emoji} ~{self.label}~"
 
@@ -76,14 +83,21 @@ class SlackSink(ResponseSink):
     text is posted once.
 
     What does stream is the work: each agent delegation and tool call appears as a
-    `:loading123:` line while it runs, and is struck through with `:talabatdone:` when it
-    finishes.
+    running line while it happens, and is struck through when it finishes. The emoji and
+    the cooldown come from `SlackConfig`, so a deployment can supply its own.
     """
 
-    def __init__(self, client: Any, channel: str, thread_ts: str | None):
+    def __init__(
+        self,
+        client: Any,
+        channel: str,
+        thread_ts: str | None,
+        config: SlackConfig | None = None,
+    ):
         self.client = client
         self.channel = channel
         self.thread_ts = thread_ts
+        self.config = config or SlackConfig()
         self.progress_ts: str | None = None
         self.answer_ts: str | None = None
         self._steps: list[Step] = []
@@ -116,9 +130,11 @@ class SlackSink(ResponseSink):
     def _render(self) -> str:
         if not self._steps:
             # Nothing was delegated, so show the run itself as the single step.
-            placeholder = Step("__run__", STARTING_LABEL, RUNNING if self._running else DONE)
-            return placeholder.render()
-        return "\n".join(step.render() for step in self._steps)
+            placeholder = Step(
+                "__run__", self.config.starting_label, RUNNING if self._running else DONE
+            )
+            return placeholder.render(self.config)
+        return "\n".join(step.render(self.config) for step in self._steps)
 
     def _touch(self) -> None:
         """Mark the progress list dirty and make sure something will render it.
@@ -137,9 +153,17 @@ class SlackSink(ResponseSink):
             while self._dirty:
                 self._dirty = False
                 await self._edit_progress(self._render())
-                await asyncio.sleep(UPDATE_INTERVAL)
+                await asyncio.sleep(self.config.update_interval)
         except asyncio.CancelledError:
             pass
+
+    async def _flush_now(self) -> None:
+        """Render the current progress immediately, leaving the coalescer running.
+
+        Used before posting a script agent's output, so the step list above it is current.
+        """
+        self._dirty = False
+        await self._edit_progress(self._render())
 
     async def _stop_flusher(self) -> None:
         if self._flusher is not None and not self._flusher.done():
@@ -159,6 +183,16 @@ class SlackSink(ResponseSink):
 
     async def chunk(self, text: str) -> None:
         """Ignored: the answer is posted once, not streamed."""
+
+    async def message(self, text: str) -> None:
+        """Post a script agent's output as its own message, before the final answer.
+
+        Flushed first so the progress list is up to date when the output lands beneath it.
+        """
+        if not text.strip():
+            return
+        await self._flush_now()
+        await self._post(text)
 
     async def event(self, kind: str, detail: str, key: str | None = None) -> None:
         if kind in {"agent_start", "tool"}:
@@ -207,11 +241,14 @@ class SlackSink(ResponseSink):
 
     async def final(self, text: str) -> None:
         await self._settle()
-        self.answer_ts = await self._post(text.strip() or "_(no output)_")
+        # Empty is a valid silent outcome — the progress message is the whole reply.
+        if not text.strip():
+            return
+        self.answer_ts = await self._post(text)
 
     async def error(self, text: str) -> None:
         await self._settle(failed=True)
-        self.answer_ts = await self._post(f"{FAILED_EMOJI} {text}")
+        self.answer_ts = await self._post(f"{self.config.failed_emoji} {text}")
 
     async def _settle(self, failed: bool = False) -> None:
         """Close out the progress message: nothing may be left spinning."""
@@ -228,8 +265,9 @@ class SlackListener(Listener):
 
     name = "slack"
 
-    def __init__(self, handler: Handler):
+    def __init__(self, handler: Handler, config: SlackConfig | None = None):
         super().__init__(handler)
+        self.config = config or SlackConfig()
         self._app: Any = None
         self._socket: Any = None
 
@@ -339,7 +377,7 @@ class SlackListener(Listener):
             thread=thread_ts,
             meta={"event": event},
         )
-        sink = SlackSink(client, channel, thread_ts)
+        sink = SlackSink(client, channel, thread_ts, self.config)
         await sink.status("working")
 
         try:
