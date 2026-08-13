@@ -8,16 +8,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..config import (
+    CHANNEL_TYPE_EVENTS,
     DEFAULT_DONE_EMOJI,
     DEFAULT_FAILED_EMOJI,
     DEFAULT_RUNNING_EMOJI,
     DEFAULT_STARTING_LABEL,
     DEFAULT_UPDATE_INTERVAL,
+    EVENT_APP_MENTION,
+    EVENT_MESSAGE_IM,
     SlackConfig,
 )
 from ..errors import ListenerError
 from ..logger import get_logger
-from .base import Handler, Listener, Message, ResponseSink
+from .base import Handler, Listener, Message, ResponseSink, trigger_values
 
 logger = get_logger("slack")
 
@@ -33,8 +36,10 @@ STARTING_LABEL = DEFAULT_STARTING_LABEL
 
 MAX_LABEL_CHARS = 180
 
-# Bot-token scopes the listener needs: receive mentions, receive DMs, and reply.
-REQUIRED_SCOPES = ("app_mentions:read", "chat:write", "im:history")
+# Message subtypes worth handling. Everything else — edits, deletions, channel joins,
+# thread broadcasts — is not a new question, so it is ignored. `bot_message` is only
+# accepted when `allow_bots` is on.
+BOT_MESSAGE_SUBTYPE = "bot_message"
 
 _MENTION = re.compile(r"<@[A-Z0-9]+>")
 _WHITESPACE = re.compile(r"\s+")
@@ -270,7 +275,12 @@ class SlackSink(ResponseSink):
 
 
 class SlackListener(Listener):
-    """Listens for mentions and DMs over Slack Socket Mode."""
+    """Listens over Slack Socket Mode for the events its config asks for.
+
+    Which events, and which messages within them, come from `SlackConfig.events`. By
+    default that is `app_mention` alone: the bot answers when named and stays out of the
+    way otherwise. Anything wider is opted into per event, optionally behind a filter.
+    """
 
     name = "slack"
 
@@ -279,6 +289,9 @@ class SlackListener(Listener):
         self.config = config or SlackConfig()
         self._app: Any = None
         self._socket: Any = None
+        # Learned from auth.test at startup. Used to ignore our own posts, and to drop the
+        # duplicate copy of a mention that also arrives as a channel message.
+        self.bot_user_id: str | None = None
 
     @staticmethod
     def _imports() -> tuple[Any, Any]:
@@ -332,47 +345,102 @@ class SlackListener(Listener):
             )
             return await next()
 
-        @app.event("app_mention")
-        async def on_mention(event: dict[str, Any], client: Any) -> None:
-            await self.on_mention_event(event, client)
+        # Register only what the config asked for. An unregistered event is one Bolt logs
+        # as unhandled, which is a clearer signal than a handler that silently returns.
+        if self.config.listens_to(EVENT_APP_MENTION):
 
-        @app.event("message")
-        async def on_message(event: dict[str, Any], client: Any) -> None:
-            await self.on_message_event(event, client)
+            @app.event("app_mention")
+            async def on_mention(event: dict[str, Any], client: Any) -> None:
+                await self.on_mention_event(event, client)
+
+        if self.config.message_events:
+            # All four message.* flavours arrive through this one handler, told apart by
+            # channel_type.
+            @app.event("message")
+            async def on_message(event: dict[str, Any], client: Any) -> None:
+                await self.on_message_event(event, client)
 
         self._app = app
         self._socket = AsyncSocketModeHandler(app, app_token)
 
     async def on_mention_event(self, event: dict[str, Any], client: Any) -> None:
         """Handle an `app_mention`, i.e. the bot named in a channel."""
-        if event.get("bot_id"):
-            # Another bot mentioned us; answering could start a loop between them.
-            logger.info("Ignoring app_mention from bot %s", event.get("bot_id"))
+        if self._from_a_bot(event, EVENT_APP_MENTION):
             return
-        await self._dispatch(event, client)
+        await self._dispatch(event, client, EVENT_APP_MENTION)
 
     async def on_message_event(self, event: dict[str, Any], client: Any) -> None:
-        """Handle a `message`, but only a direct one.
+        """Handle a `message`, if its flavour is one of the enabled `message.*` events."""
+        channel_type = str(event.get("channel_type") or "")
+        name = CHANNEL_TYPE_EVENTS.get(channel_type)
 
-        Mentions in channels already arrive as `app_mention`, so accepting channel
-        messages here would answer them twice.
-        """
-        if event.get("channel_type") != "im":
+        if name is None:
+            logger.debug("Ignoring message with unrecognised channel_type=%r", channel_type)
+            return
+        if not self.config.listens_to(name):
             logger.debug(
-                "Ignoring message in channel_type=%s (only DMs are handled here; "
-                "channel mentions arrive as app_mention)",
-                event.get("channel_type"),
+                "Ignoring %s: not enabled. Add it to config.slack.events to handle it.", name
             )
             return
-        if event.get("subtype"):
-            logger.debug("Ignoring message with subtype=%s", event.get("subtype"))
-            return
-        if event.get("bot_id"):
-            logger.debug("Ignoring message from bot %s", event.get("bot_id"))
-            return
-        await self._dispatch(event, client)
 
-    async def _dispatch(self, event: dict[str, Any], client: Any) -> None:
+        # Authorship is checked before the subtype, because a bot post arrives *as* the
+        # `bot_message` subtype — deciding on the subtype first would drop it with a note
+        # about subtypes instead of the one about `allow_bots` that actually helps.
+        if self._from_a_bot(event, name):
+            return
+
+        subtype = str(event.get("subtype") or "")
+        if subtype and subtype != BOT_MESSAGE_SUBTYPE:
+            # Edits, deletions and joins are not new questions.
+            logger.debug("Ignoring %s with subtype=%s", name, subtype)
+            return
+        if subtype == BOT_MESSAGE_SUBTYPE and not self.config.allow_bots:
+            # A bot post with no bot_id to identify it by.
+            logger.info(
+                "Ignoring %s with subtype=%s; set config.slack.allow_bots to handle bot "
+                "posts",
+                name,
+                subtype,
+            )
+            return
+        if self._is_duplicate_of_a_mention(event, name):
+            return
+
+        await self._dispatch(event, client, name)
+
+    def _from_a_bot(self, event: dict[str, Any], name: str) -> bool:
+        """Whether to drop this event because a bot, or we ourselves, wrote it."""
+        if event.get("user") and event.get("user") == self.bot_user_id:
+            # Always: answering ourselves is an unbounded loop.
+            logger.debug("Ignoring %s from ourselves", name)
+            return True
+        author = event.get("bot_id")
+        if not author:
+            return False
+        if self.config.allow_bots:
+            logger.debug("Handling %s from bot %s (allow_bots is on)", name, author)
+            return False
+        logger.info(
+            "Ignoring %s from bot %s; set config.slack.allow_bots to handle bot posts",
+            name,
+            author,
+        )
+        return True
+
+    def _is_duplicate_of_a_mention(self, event: dict[str, Any], name: str) -> bool:
+        """Drop the channel-message copy of a mention that also arrives as `app_mention`.
+
+        Slack sends both for the same post, so listening to `app_mention` and
+        `message.channels` together would otherwise answer it twice.
+        """
+        if not self.config.listens_to(EVENT_APP_MENTION) or self.bot_user_id is None:
+            return False
+        if f"<@{self.bot_user_id}>" not in str(event.get("text") or ""):
+            return False
+        logger.debug("Ignoring %s that mentions us; app_mention covers it", name)
+        return True
+
+    async def _dispatch(self, event: dict[str, Any], client: Any, name: str) -> None:
         text = _MENTION.sub("", str(event.get("text") or "")).strip()
         channel = str(event.get("channel") or "")
         if not text or not channel:
@@ -384,8 +452,17 @@ class SlackListener(Listener):
             user=event.get("user"),
             channel=channel,
             thread=thread_ts,
-            meta={"event": event},
+            meta={"event": event, "slack_event": name},
         )
+
+        # The filter runs against the same text the handler will see — mention stripped —
+        # so a rule reads the way it looks. No match means total silence: no progress
+        # message, nothing posted.
+        rule = self.config.filter_for(name)
+        if rule is not None and not rule.matches(trigger_values(message)):
+            logger.debug("Ignoring %s: filter %s did not match", name, rule)
+            return
+
         sink = SlackSink(client, channel, thread_ts, self.config)
         await sink.status("working")
 
@@ -415,31 +492,41 @@ class SlackListener(Listener):
             )
             return
 
+        self.bot_user_id = auth.get("user_id")
         logger.info(
             "Slack connected as %s (bot user %s) in workspace '%s'",
             auth.get("user"),
-            auth.get("user_id"),
+            self.bot_user_id,
             auth.get("team"),
         )
+        logger.info("Slack listening for: %s", self.config.describe_events())
+        if not self.config.listens_to(EVENT_MESSAGE_IM):
+            logger.info(
+                "Direct messages are ignored — add 'message.im' to config.slack.events "
+                "to handle them."
+            )
 
         granted = self._granted_scopes(auth)
         if granted is None:
             return
 
-        missing = [scope for scope in REQUIRED_SCOPES if scope not in granted]
+        required = self.config.required_scopes
+        missing = [scope for scope in required if scope not in granted]
         if missing:
             logger.error(
-                "Slack bot token is missing the scope(s) %s. Add them under OAuth & "
-                "Permissions, then REINSTALL the app — scope changes need a reinstall to "
-                "take effect. Granted: %s",
+                "Slack bot token is missing the scope(s) %s, needed for the event(s) you "
+                "configured. Add them under OAuth & Permissions, then REINSTALL the app — "
+                "scope changes need a reinstall to take effect. Granted: %s",
                 ", ".join(missing),
                 ", ".join(sorted(granted)) or "(none)",
             )
         else:
             logger.info(
-                "Slack scopes OK. Waiting for events — the app must also be subscribed to "
-                "the 'app_mention' and 'message.im' bot events under Event Subscriptions, "
-                "and invited to any channel you mention it in."
+                "Slack scopes OK (%s). Waiting for events — the app must also be "
+                "subscribed to the %s bot event(s) under Event Subscriptions, and invited "
+                "to any channel you expect it to read.",
+                ", ".join(required),
+                ", ".join(self.config.enabled_events),
             )
 
     @staticmethod

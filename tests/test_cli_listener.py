@@ -191,7 +191,7 @@ async def test_slack_output_carries_no_timing():
         return RunResult(output="EMEA Q2 was $4.48M.", iterations=2, cost=0.0122)
 
     await SlackListener(handler)._dispatch(
-        {"text": "emea?", "channel": "C1", "ts": "1.0"}, FakeClient()
+        {"text": "emea?", "channel": "C1", "ts": "1.0"}, FakeClient(), "app_mention"
     )
 
     assert any("EMEA Q2 was $4.48M." in text for text in posted)

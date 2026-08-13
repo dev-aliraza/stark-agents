@@ -7,7 +7,7 @@ key yet — it exercises the whole flow for free.
 | --- | --- | --- |
 | [`01_quickstart.py`](01_quickstart.py) | The smallest useful program: `stark.run()` + CLI | yes |
 | [`02_custom_instructions.py`](02_custom_instructions.py) | Master system prompt, `exclude_agents`, agent chaining | yes |
-| [`03_slack_bot.py`](03_slack_bot.py) | The same agents served to Slack | yes |
+| [`03_slack_bot.py`](03_slack_bot.py) | The same agents served to Slack, with `events` choosing what it answers | yes |
 | [`04_embed_programmatically.py`](04_embed_programmatically.py) | No listener: `Registry` + `Orchestrator` + a custom `ResponseSink` | yes |
 | [`05_offline_walkthrough.py`](05_offline_walkthrough.py) | The full flow with a **fake model** — real scripts, real MCP, no cost | **no** |
 

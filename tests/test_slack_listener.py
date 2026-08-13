@@ -401,6 +401,7 @@ async def test_dispatch_strips_the_mention_and_threads_the_reply():
             "ts": "1700000000.0002",
         },
         client,
+        "app_mention",
     )
 
     assert seen[0].text == "research checkout latency"
@@ -419,7 +420,7 @@ async def test_dispatch_ignores_empty_text():
         return RunResult()
 
     await SlackListener(handler)._dispatch(
-        {"text": "<@U0BOT>", "channel": "C1", "ts": "1"}, FakeSlackClient()
+        {"text": "<@U0BOT>", "channel": "C1", "ts": "1"}, FakeSlackClient(), "app_mention"
     )
     assert called is False
 
@@ -431,7 +432,7 @@ async def test_dispatch_reports_handler_errors_to_slack(caplog):
     client = FakeSlackClient()
     with caplog.at_level("ERROR"):
         await SlackListener(handler)._dispatch(
-            {"text": "hi", "channel": "C1", "ts": "1"}, client
+            {"text": "hi", "channel": "C1", "ts": "1"}, client, "app_mention"
         )
 
     assert FAILED_EMOJI in client.answer
@@ -471,8 +472,13 @@ class AuthResponse(dict):
         self.headers = headers
 
 
-def listener_with_auth(auth_result):
-    listener = SlackListener(handler=None)
+def dm_listener(handler):
+    """DMs are off by default, so a test about them has to ask for them."""
+    return SlackListener(handler, SlackConfig(events={"message.im": True}))
+
+
+def listener_with_auth(auth_result, config=None):
+    listener = SlackListener(handler=None, config=config)
 
     class FakeApp:
         class client:
@@ -514,7 +520,8 @@ async def test_identity_is_logged_so_you_know_which_workspace(caplog):
 
 async def test_missing_scopes_are_named_with_the_reinstall_hint(caplog):
     listener = listener_with_auth(
-        AuthResponse(IDENTITY, {"x-oauth-scopes": "chat:write,commands"})
+        AuthResponse(IDENTITY, {"x-oauth-scopes": "chat:write,commands"}),
+        config=SlackConfig(events={"app_mention": True, "message.im": True}),
     )
 
     with caplog.at_level("ERROR"):
@@ -525,6 +532,79 @@ async def test_missing_scopes_are_named_with_the_reinstall_hint(caplog):
     assert "REINSTALL" in caplog.text
     # A granted scope must not be reported as missing.
     assert "missing the scope(s) app_mentions:read, im:history" in caplog.text
+
+
+async def test_only_the_scopes_the_configured_events_need_are_required(caplog):
+    """The default config never asks for im:history, so it must not be reported missing."""
+    listener = listener_with_auth(
+        AuthResponse(IDENTITY, {"x-oauth-scopes": "chat:write,app_mentions:read"})
+    )
+
+    with caplog.at_level("INFO"):
+        await listener._log_identity()
+
+    assert "missing the scope" not in caplog.text
+    assert "scopes OK" in caplog.text
+    assert "im:history" not in caplog.text.split("Direct messages")[0]
+
+
+async def test_a_channel_event_adds_its_own_history_scope(caplog):
+    listener = listener_with_auth(
+        AuthResponse(IDENTITY, {"x-oauth-scopes": "chat:write,app_mentions:read"}),
+        config=SlackConfig(events={"app_mention": True, "message.channels": True}),
+    )
+
+    with caplog.at_level("ERROR"):
+        await listener._log_identity()
+
+    assert "missing the scope(s) channels:history" in caplog.text
+
+
+async def test_the_startup_log_names_what_is_listened_to(caplog):
+    listener = listener_with_auth(
+        AuthResponse(IDENTITY, {"x-oauth-scopes": "chat:write,app_mentions:read"}),
+        config=SlackConfig(
+            events={"app_mention": True, "message.channels": 'text.contains("=====")'}
+        ),
+    )
+
+    with caplog.at_level("INFO"):
+        await listener._log_identity()
+
+    assert "listening for: app_mention, message.channels when" in caplog.text
+    assert 'text.contains("=====")' in caplog.text
+
+
+async def test_the_startup_log_points_out_that_dms_are_ignored(caplog):
+    listener = listener_with_auth(
+        AuthResponse(IDENTITY, {"x-oauth-scopes": "chat:write,app_mentions:read"})
+    )
+
+    with caplog.at_level("INFO"):
+        await listener._log_identity()
+
+    assert "Direct messages are ignored" in caplog.text
+    assert "message.im" in caplog.text
+
+
+async def test_no_dm_hint_when_dms_are_enabled(caplog):
+    listener = listener_with_auth(
+        AuthResponse(IDENTITY, {"x-oauth-scopes": "chat:write,im:history"}),
+        config=SlackConfig(events={"message.im": True}),
+    )
+
+    with caplog.at_level("INFO"):
+        await listener._log_identity()
+
+    assert "Direct messages are ignored" not in caplog.text
+
+
+async def test_the_bot_user_id_is_remembered_for_self_and_dedup_checks(caplog):
+    listener = listener_with_auth(AuthResponse(IDENTITY, {}))
+
+    await listener._log_identity()
+
+    assert listener.bot_user_id == "U1"
 
 
 async def test_scope_check_is_skipped_when_slack_reports_no_scopes(caplog):
@@ -547,8 +627,8 @@ def test_granted_scopes_parsing():
     assert parse(AuthResponse({}, {})) is None
 
 
-async def test_channel_messages_are_ignored_by_the_dm_handler(caplog):
-    """A channel message must be dropped with a reason, not silently."""
+async def test_an_unconfigured_message_event_is_dropped_with_a_reason(caplog):
+    """Dropping it silently is what makes a quiet bot hard to diagnose."""
     import logging
 
     from stark.logger import configure_logging
@@ -570,12 +650,29 @@ async def test_channel_messages_are_ignored_by_the_dm_handler(caplog):
             )
 
         assert called is False
-        assert "channel_type=channel" in caplog.text
+        assert "Ignoring message.channels: not enabled" in caplog.text
+        assert "config.slack.events" in caplog.text
     finally:
         configure_logging(logging.INFO)
 
 
-async def test_dm_reaches_the_handler():
+async def test_a_dm_is_ignored_by_default():
+    """`events` defaults to app_mention alone, so a DM reaches nothing."""
+    called = False
+
+    async def handler(message, sink):
+        nonlocal called
+        called = True
+        return RunResult()
+
+    await SlackListener(handler).on_message_event(
+        {"text": "hi there", "channel": "D1", "ts": "1", "channel_type": "im"},
+        FakeSlackClient(),
+    )
+    assert called is False
+
+
+async def test_a_dm_reaches_the_handler_once_enabled():
     seen = []
 
     async def handler(message, sink):
@@ -583,7 +680,7 @@ async def test_dm_reaches_the_handler():
         await sink.final("ok")
         return RunResult(output="ok")
 
-    await SlackListener(handler).on_message_event(
+    await dm_listener(handler).on_message_event(
         {"text": "hi there", "channel": "D1", "ts": "1", "channel_type": "im"},
         FakeSlackClient(),
     )
@@ -597,7 +694,7 @@ async def test_message_subtypes_and_bots_are_ignored():
         calls.append(message.text)
         return RunResult()
 
-    listener = SlackListener(handler)
+    listener = dm_listener(handler)
     client = FakeSlackClient()
     await listener.on_message_event(
         {"text": "edited", "channel": "D1", "ts": "1", "channel_type": "im",

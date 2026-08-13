@@ -18,6 +18,22 @@ class Message:
     meta: dict[str, Any] = field(default_factory=dict)
 
 
+def trigger_values(message: Message) -> dict[str, str | None]:
+    """The message fields a trigger expression may read.
+
+    Defined here, beside `Message`, because two layers evaluate the same expressions
+    against the same fields: a Slack listener filter deciding whether to respond at all,
+    and a script agent's `triggerRule` deciding whether it runs. They must agree on what
+    `text` means, so there is one mapping rather than one each.
+    """
+    return {
+        "text": message.text,
+        "user": message.user,
+        "channel": message.channel,
+        "thread": message.thread,
+    }
+
+
 class ResponseSink(ABC):
     """Where a run's output goes — the listener decides how to render it.
 

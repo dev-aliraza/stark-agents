@@ -126,10 +126,10 @@ def run(
 | Argument | Meaning |
 | --- | --- |
 | `agents` | Root folder holding one subdirectory per agent. |
-| `listener` | `"cli"` for an interactive prompt, `"slack"` for mentions and DMs over Socket Mode. |
+| `listener` | `"cli"` for an interactive prompt, `"slack"` for a Socket Mode bot. |
 | `exclude_agents` | Directory names inside `agents` to skip during discovery. |
 | `instructions` | The master system prompt for the orchestration loop. |
-| `config` | Presentation settings — currently the Slack progress icons. See [Customising the icons](#customising-the-icons). |
+| `config` | Listener settings — which Slack events to answer, and the progress icons. See [Choosing what to listen to](#choosing-what-to-listen-to). |
 
 `run()` blocks until interrupted. To embed it in an existing event loop, use
 `await stark.run_async(...)` — same arguments.
@@ -537,8 +537,8 @@ export SLACK_APP_TOKEN=xapp-...   # app-level token, Socket Mode enabled
 stark --agents ./agents --listener slack
 ```
 
-Responds to `@mentions` in channels and to direct messages, replying in-thread. Subscribe
-your app to the `app_mention` and `message.im` events.
+By default it answers `@mentions` only, replying in-thread. Anything wider is opted into —
+see [Choosing what to listen to](#choosing-what-to-listen-to).
 
 **The answer is not streamed.** Slack gets two messages: a live progress message, and the
 finished answer posted once. Each agent delegation and tool call appears as a
@@ -559,6 +559,76 @@ Edits are coalesced rather than sent per event: the first change goes out immedi
 changes during the cooldown collapse into one edit, which keeps a wide parallel run inside
 Slack's ~1 edit/second limit. On a fast query several steps may therefore go from unseen to
 struck in a single edit.
+
+### Choosing what to listen to
+
+`config["slack"]["events"]` decides what the bot sees. Omit it and only `app_mention` is
+handled: the bot answers when named and is otherwise silent.
+
+```python
+stark.run(
+    listener="slack",
+    config={
+        "slack": {
+            "events": {
+                "app_mention": True,                            # always
+                "message.im": True,                             # direct messages
+                "message.channels": 'text.contains("=====")',    # only these
+            }
+        }
+    },
+)
+```
+
+`True` listens to every one of those events, a string listens when that expression matches,
+and `False` parks the line without deleting it. A plain list works when nothing needs
+filtering: `"events": ["app_mention", "message.im"]`.
+
+| Event | What it is | Scope it needs |
+| --- | --- | --- |
+| `app_mention` | the bot named in a channel | `app_mentions:read` |
+| `message.im` | a direct message | `im:history` |
+| `message.channels` | any message in a public channel it is in | `channels:history` |
+| `message.groups` | any message in a private channel | `groups:history` |
+| `message.mpim` | any message in a group DM | `mpim:history` |
+
+These are Slack's own event names, because you have to subscribe to the same strings under
+**Event Subscriptions** in your app config — one list, not two vocabularies. Scopes are
+derived from what you enabled, so startup names the scope missing *for an event you asked
+for* instead of a fixed list. `chat:write` is always required.
+
+**The filter is the same expression language as an agent `triggerRule`** — `contains` and
+`notContains` over `text`, `user`, `channel`, `thread`, joined with `and`/`or`/`not`. It runs
+against the text the handler would see, with the mention stripped, and is parsed at startup
+so a malformed expression fails before the socket opens.
+
+The two layers are worth keeping distinct:
+
+| | Listener filter | Agent `triggerRule` |
+| --- | --- | --- |
+| Decides | whether to respond at all | which script agent runs |
+| On no match | total silence, nothing posted | the progress message still settles |
+
+Two things to know once you go past mentions:
+
+- **`channel` is an id** (`C0A1B2C3`), never a name, so `channel.contains("#support")` never
+  fires. This is the same caveat as [`triggerRule`](#triggerrule).
+- **Enabling `app_mention` and `message.channels` together is safe.** Slack delivers a
+  channel mention as *both*, and the listener drops the duplicate copy.
+
+### Bot-authored messages
+
+Messages from other bots are ignored by default, which matters if your trigger source is an
+alerting integration rather than a person:
+
+```python
+config={"slack": {"events": {"message.channels": 'text.contains("=====")'},
+                  "allow_bots": True}}
+```
+
+Our own posts are always ignored regardless, since answering them is an unbounded loop.
+`allow_bots` admits only the `bot_message` subtype — edits, deletions and channel joins stay
+ignored either way, because none of them is a new question.
 
 ### Customising the icons
 
@@ -594,6 +664,8 @@ stark.run(listener="slack", config=Config(slack=SlackConfig(running_emoji="⏳")
 | `failed_emoji` | `:x:` | Shown when a step fails, and prefixes an error reply |
 | `starting_label` | `Working on it` | The placeholder line before any step exists |
 | `update_interval` | `1.2` | Seconds between `chat.update` calls |
+| `events` | `{"app_mention": True}` | Which events to handle, and an optional filter per event |
+| `allow_bots` | `false` | Whether messages written by other bots are handled |
 
 Emoji may be a shortcode (`:hourglass:`) or a literal character (`⏳`). Unlike AGENT.md
 metadata — which is parsed forgivingly, because one bad file shouldn't stop the process —

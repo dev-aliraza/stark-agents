@@ -24,6 +24,7 @@ import asyncio
 from typing import Iterable, Sequence
 
 from ..listeners.base import Message, ResponseSink
+from ..listeners.base import trigger_values as _trigger_values
 from ..logger import get_logger
 from ..types import TRIGGER_POINT_BEFORE, AgentConfig, ScriptResult
 from .script_runner import ScriptRunner, build_payload
@@ -60,13 +61,8 @@ def stop_requested(results: Iterable[ScriptResult]) -> ScriptResult | None:
 
 
 def trigger_values(message: Message) -> dict[str, str | None]:
-    """The message fields a triggerRule may read."""
-    return {
-        "text": message.text,
-        "user": message.user,
-        "channel": message.channel,
-        "thread": message.thread,
-    }
+    """The message fields a triggerRule may read. Defined in `listeners.base`."""
+    return _trigger_values(message)
 
 
 class ScriptPhase:
