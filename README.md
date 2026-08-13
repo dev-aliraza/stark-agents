@@ -17,7 +17,7 @@ agents are relevant — in parallel when the sub-tasks are independent.
 ## Features
 
 - 📁 **Agents are folders, not code** — an `AGENT.md` with YAML frontmatter is a complete agent.
-- ⚙️ **Deterministic script agents** — trigger a plain Python `run()` on a rule match, with no model in the path at all.
+- ⚙️ **Deterministic script agents** — a plain Python `run()` with no model in the path: delegated to like any other agent, or fired by a rule before or after the orchestrator. One can halt the whole query.
 - 🔌 **Native MCP** — declare stdio or streamable-HTTP servers in frontmatter; they start once at boot and stay warm.
 - 🧠 **Model agnostic** — LiteLLM underneath, so any of its 100+ providers works. Anthropic is the first-class default.
 - 🎧 **Pluggable listeners** — an interactive CLI or a Slack Socket Mode bot, same orchestration behind both.
@@ -141,13 +141,31 @@ def run(
 | | `type: llm` | `type: script` |
 | --- | --- | --- |
 | Runs | a model, with tools | a Python `run()` function — **no model** |
-| Offered to the orchestrator | yes | **never** |
-| Reached by | the orchestrator's routing decision | `triggerRule`, or unconditionally |
+| Offered to the orchestrator | yes | yes, unless `avoid_orchestrator: true` |
+| Also runs on its own | no | only if it sets a `triggerPoint` |
 | Needs a provider/model | yes | no |
 
 A script agent is for work that must happen the same way every time — open a ticket, tag a
 request, call an internal API. Nothing is left to a model's judgement, and no tokens are
 spent deciding whether to run it.
+
+It has two independent ways in:
+
+* **By delegation**, when the orchestrator decides the request calls for it. On by default;
+  `avoid_orchestrator: true` turns it off.
+* **Automatically**, whenever its `triggerRule` matches. Off by default; a `triggerPoint`
+  turns it on and says whether it happens before or after the orchestrator.
+
+So a script agent with no `triggerPoint` is just a deterministic tool: it sits in the
+orchestrator's tool list and waits to be asked. Adding `triggerPoint` is what makes it fire
+on its own as well.
+
+Two combinations are worth avoiding, and Stark warns about both at startup:
+
+* A `triggerRule` with **no** `triggerPoint` does nothing — there is no automatic run for it
+  to gate, and delegation does not consult it.
+* `avoid_orchestrator: true` with **no** `triggerPoint` leaves nothing able to run the agent
+  at all.
 
 ## The AGENT.md schema
 
@@ -179,10 +197,16 @@ If a mandatory key is missing, Stark logs a warning and skips that agent. The re
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `triggerRule` | *(none — runs on every message)* | An expression deciding whether this agent runs. |
-| `priority` | `100` | Higher runs earlier. Agents sharing a priority run in parallel. |
+| `triggerPoint` | *(none — the agent never runs on its own)* | `before_orchestrator` or `after_orchestrator`: gives the agent an automatic run, on that side of the orchestrator. |
+| `triggerRule` | *(none — the automatic run fires on every message)* | An expression deciding which messages that automatic run fires for. Needs a `triggerPoint` to do anything. |
+| `priority` | `100` | Higher runs earlier, within its own `triggerPoint`. Agents sharing a priority run in parallel. |
 | `send_output` | `false` | Whether the output is also posted to the user. |
+| `avoid_orchestrator` | `false` | `true` withholds the agent from the orchestrator's tool list. |
 | `timeout` | `120` | Seconds before `run()` is abandoned. |
+
+Omitting `triggerPoint` is safe by design — the agent only runs when asked. A *wrong* value
+is rejected outright, since defaulting it would silently move the agent to the wrong side of
+the model.
 
 Metadata that belongs to the other type is ignored with a warning, so a `triggerRule` on an
 `llm` agent tells you it does nothing rather than silently never firing.
@@ -288,9 +312,13 @@ type: script
 script: open_ticket.py
 priority: 200
 send_output: true
+triggerPoint: before_orchestrator
 triggerRule: 'text.contains("=====") and channel.notContains("PODUEMCJE")'
 ---
 ```
+
+Drop the last two lines and you still have a working agent — one the orchestrator can
+delegate to, which never fires on its own.
 
 ```python
 def run(message: dict) -> str:            # `async def run(...)` also works
@@ -302,18 +330,77 @@ nothing from `stark` and can be unit-tested on its own:
 
 | Key | Contents |
 | --- | --- |
-| `text` | the message, mention stripped |
+| `text` | the message, mention stripped — always the user's own words |
 | `user`, `channel`, `thread` | listener identifiers (see the table below) |
 | `meta` | the raw listener payload |
 | `agent`, `workspace` | this agent's name and directory |
-| `prior_outputs` | `[{agent, output, error}]` from higher-priority bands |
+| `prior_outputs` | `[{agent, output, error}]` from everything that already ran this query |
+| `invocation` | `"trigger"` or `"delegation"` — how this run was reached |
+| `task`, `context` | what the orchestrator asked for; empty strings on a triggered run |
+| `orchestrator_output` | the answer the orchestrator gave; empty unless `after_orchestrator` |
 
-Return a string, or anything JSON-serialisable. Raising is safe — the phase is fail-open, so
-the error is shown as a failed step and passed to the orchestrator as context.
+The keys are the same however the agent was reached, so one script can serve both a trigger
+and a delegation. Return a string, or anything JSON-serialisable. Raising is safe — the phase
+is fail-open, so the error is shown as a failed step and passed to the orchestrator as
+context.
 
 A synchronous `run()` is executed in a worker thread so blocking I/O can't stall the event
 loop, MCP sessions, or other in-flight queries. The `timeout` abandons a wedged call but
 cannot kill the thread, so an infinite loop leaks one thread for the life of the process.
+
+### Stopping the run
+
+A script can end the query outright by returning a mapping with `stop_execution: true`:
+
+```python
+def run(message: dict) -> dict:
+    if already_handled(message["thread"]):
+        return {"stop_execution": True, "output": "Ignored: already handled this thread."}
+    return "Nothing to do."
+```
+
+Nothing downstream runs: later bands in the same phase, the orchestrator, and the after
+phase are all skipped. What already happened stands — output a script posted stays posted,
+and every step that ran is closed out normally, so nothing is left showing as in-progress.
+
+- **`stop_execution` is a control signal, not output.** It is stripped before rendering. Give
+  the user a message with an `output` key alongside it; any other keys are rendered as JSON.
+- **Peers in the same band still complete.** They started concurrently, so by the time the
+  flag is read they have already run. Give a gate its own higher `priority` if it must
+  precede the work it guards.
+- **A crash is not a stop.** A script that raises is still fail-open, and the run continues.
+- **From a delegated call it stops the orchestrator too.** The current turn's tool results
+  are discarded rather than sent back, because the model would otherwise answer around the
+  halt. That leaves the reply as whatever the script posted, so a script that stops the run
+  from a delegated call should set `send_output: true` and say something.
+
+`RunResult.stopped_by` names the agent that halted the run, and `RunResult.stopped` is the
+boolean.
+
+### Delegation vs. triggering
+
+Delegation is on by default; the triggered run is what `triggerPoint` adds. Set both and the
+agent has both. They differ in four ways:
+
+| | Triggered run | Delegated call |
+| --- | --- | --- |
+| Exists when | `triggerPoint` is set | `avoid_orchestrator` is not `true` |
+| Decided by | `triggerRule` | the orchestrator |
+| `triggerRule` consulted | yes | **no** — naming the agent is the decision |
+| `task` / `context` | empty | what the model asked for |
+| Output reaches the model | as context for the next turn | as the tool result |
+
+`send_output: true` posts the raw output to the user either way. On a delegated call the tool
+result is tagged as already posted, so the model builds on it instead of repeating it.
+
+Pick by who should decide:
+
+| Want | Set |
+| --- | --- |
+| The model decides when to act | nothing — that's the default |
+| A rule decides, and nothing else | `triggerPoint` **and** `avoid_orchestrator: true` |
+| Either can act | `triggerPoint` alone |
+| It always runs, on every message | `triggerPoint`, no `triggerRule`, and `avoid_orchestrator: true` so the model cannot run it twice |
 
 ### `triggerRule`
 
@@ -352,34 +439,49 @@ but it is not a guard off Slack.
 ```
 user query
    │
-   ├─ script phase — deterministic, no model
+   ├─ script phase: triggerPoint: before_orchestrator — deterministic, no model
    │     band 200 : A, B    matching agents run in parallel
    │     band 100 : C       then this band, seeing A+B's output
    │        │
    │        │  send_output: true  → posted to the user AND passed on
    │        │  send_output: false → passed on only
    │        ▼
-   ├─ orchestrator (master instructions + llm roster) ── runs only if an llm agent exists
+   ├─ orchestrator (master instructions + roster) ── runs only if an llm agent exists
    │     │
-   │     ├─ agent__research-agent ─┐   spawned in parallel, each with its own
-   │     └─ agent__example-agent ──┤   context, model, tools and budgets
+   │     ├─ agent__research-agent ─┐   llm agents: spawned in parallel, each with its
+   │     ├─ agent__example-agent ──┤   own context, model, tools and budgets
+   │     └─ agent__ticket-opener ──┤   script agents: run(), unless avoid_orchestrator
    │                               │
    │     ┌─────────────────────────┘
-   │     │  agent results returned as tool output
+   │     │  results returned as tool output
    │     ▼
-   └─ final answer streamed to the listener
+   ├─ final answer delivered to the listener
+   │
+   └─ script phase: triggerPoint: after_orchestrator
+         band 100 : D       sees every earlier result, plus the answer itself
 ```
+
+Any script agent along that path can cut it short by returning `stop_execution: true`:
+everything below it in the diagram is skipped, and the reply is whatever had already been
+posted.
 
 Each `llm` agent runs its own tool-calling loop and sees only the task it was handed — never
 the orchestrator's conversation. That keeps contexts small and makes the roster composable.
 
-Script agents run first, in descending priority bands. Bands are sequential and each one
-sees everything the earlier bands produced, so ordering can express a real dependency —
-open the ticket, then notify about it. Agents sharing a priority run concurrently, on the
-assumption they're independent.
+A script agent takes part in a phase only if it sets a `triggerPoint`; without one it appears
+solely in the orchestrator's tool list, in the middle of the diagram. Phases run in
+descending priority bands. Bands are sequential and each one sees everything the earlier
+bands produced, so ordering can express a real dependency — open the ticket, then notify
+about it. Agents sharing a priority run concurrently, on the assumption they're independent.
+Priorities are ranked within each side of the orchestrator, not across both.
 
-The orchestrator always receives what the scripts produced, labelled with whether the user
-has already seen it, so it builds on that output instead of repeating it.
+The orchestrator always receives what the before-phase scripts produced, labelled with
+whether the user has already seen it, so it builds on that output instead of repeating it.
+
+An `after_orchestrator` agent runs once the answer is out, and gets it as
+`orchestrator_output`. That makes it the place for anything that acts *on* the reply —
+archive it, file it, notify on it. Its own output cannot reach the model: that turn is over.
+It still runs when no orchestrator did, with `orchestrator_output` empty.
 
 **With no `llm` agents registered, no model is called at all.** Stark then runs as a purely
 deterministic router — no API key, no token spend. Silence is a valid outcome in that mode:
@@ -513,24 +615,59 @@ stark [--agents PATH] [--listener {cli,slack}] [--exclude NAME]... [--instructio
 Beyond `run()`, the pieces are importable if you want to embed them:
 
 ```python
-from stark import Orchestrator, Registry, discover_agents, parse_agent_file
+from stark import (
+    TRIGGER_POINT_AFTER,
+    TRIGGER_POINT_BEFORE,
+    Orchestrator,
+    Registry,
+    ScriptPhase,
+    discover_agents,
+    parse_agent_file,
+    stop_requested,
+)
 
 agents = discover_agents("./agents", exclude_agents=["wip-agent"])
 
 registry = await Registry.create("./agents")
 try:
+    before = ScriptPhase(
+        registry.script_agents_before, registry.script_runners(), TRIGGER_POINT_BEFORE
+    )
+    after = ScriptPhase(
+        registry.script_agents_after, registry.script_runners(), TRIGGER_POINT_AFTER
+    )
     orchestrator = Orchestrator(registry, "Master instructions.", stark.orchestrator_model())
-    result = await orchestrator.handle(stark.Message(text="..."), my_sink)
-    print(result.output, result.cost, result.agent_results)
+
+    message = stark.Message(text="...")
+    script_results = await before.run(message, my_sink)
+
+    if stop_requested(script_results):        # a script halted the run
+        await my_sink.final("")
+    else:
+        result = await orchestrator.handle(message, my_sink, script_results)
+        if not result.stopped:
+            result.script_results.extend(
+                await after.run(message, my_sink, result.script_results, result.output)
+            )
+        print(result.output, result.cost, result.agent_results)
 finally:
     await registry.aclose()   # must run in the task that created the registry
 ```
 
-`RunResult` carries `output`, `iterations`, `cost`, `error`, `max_iterations_reached`, and
-an `agent_results` list of per-agent `AgentResult` records.
+`run_async()` does exactly this, plus skipping the orchestrator when no `llm` agent is
+registered. Calling `Orchestrator.handle` on its own is fine — the script phases are
+optional, and it needs no script results.
+
+`RunResult` carries `output`, `iterations`, `cost`, `error`, `max_iterations_reached`,
+`stopped_by`, an `agent_results` list of per-agent `AgentResult` records, and a
+`script_results` list of `ScriptResult` records.
+
+Embedding the phases yourself means honouring `stop_execution` yourself: pass each phase's
+results to `stop_requested()` and skip what follows if it returns a result.
 
 To send output somewhere Stark does not support yet, implement `ResponseSink` (`chunk`,
-`final`, `error`, and optionally `event` and `status`) and pass it to `Orchestrator.handle`.
+`final`, `error`, and optionally `event`, `status`, `message` and `settle`) and pass it to
+`Orchestrator.handle`.
 
 ## Layout
 

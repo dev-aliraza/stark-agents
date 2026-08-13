@@ -10,7 +10,7 @@ understand what Stark does — and a useful smoke test for a new agent folder.
 
 The flow is:
 
-    script phase ──▶ ticket-opener       ──▶ runs open_ticket.py, no model at all
+    before phase ──▶ ticket-opener       ──▶ runs open_ticket.py, no model at all
                      (triggerRule matched, send_output posts it to the user)
                         │
     orchestrator ──┬─▶ sales-agent       ──▶ runs query_sales.py      (real subprocess)
@@ -19,6 +19,8 @@ The flow is:
     orchestrator ───────┴─▶ writer-agent ──▶ turns the facts into prose
                         │
     orchestrator ───────┴─▶ final answer
+                        │
+    after phase ────────┴─▶ answer-archiver ──▶ files the answer it was just handed
 """
 
 import asyncio
@@ -27,7 +29,17 @@ import os
 import sys
 
 import stark
-from stark import Message, Orchestrator, Registry, ResponseSink, ScriptPhase
+from stark import (
+    TRIGGER_POINT_AFTER,
+    TRIGGER_POINT_BEFORE,
+    Message,
+    Orchestrator,
+    Registry,
+    ResponseSink,
+    RunResult,
+    ScriptPhase,
+    stop_requested,
+)
 from stark.llm import LLMClient
 from stark.types import Completion, ToolCall
 
@@ -164,7 +176,8 @@ async def main() -> None:
         ]
         print(f"  {agent.name} tools: {', '.join(tools)}")
     for agent in registry.script_agents:
-        print(f"  {agent.name} runs {agent.script} (no model)")
+        when = agent.trigger_point or "only when delegated to"
+        print(f"  {agent.name} runs {agent.script} {when} (no model)")
 
     orchestrator = Orchestrator(registry, "You are a commercial-ops coordinator.", stark.orchestrator_model())
 
@@ -176,16 +189,39 @@ async def main() -> None:
     sink = NarratingSink()
 
     try:
-        # Step one: deterministic script agents, in priority bands.
-        script_phase = ScriptPhase(registry.script_agents, registry.script_runners())
-        script_results = await script_phase.run(message, sink)
+        # Step one: script agents with triggerPoint: before_orchestrator, in priority bands.
+        before_phase = ScriptPhase(
+            registry.script_agents_before, registry.script_runners(), TRIGGER_POINT_BEFORE
+        )
+        before = await before_phase.run(message, sink)
 
-        # Step two: the LLM orchestrator, given what the scripts produced.
-        result = await orchestrator.handle(message, sink, script_results)
+        # A script can end the query here by returning stop_execution: true. Nothing below
+        # runs, but the response is still closed out.
+        halt = stop_requested(before)
+        if halt is not None:
+            await sink.final("")
+            result = RunResult(script_results=list(before), stopped_by=halt.agent)
+        else:
+            # Step two: the LLM orchestrator, given what those scripts produced.
+            result = await orchestrator.handle(message, sink, before)
+
+        # Step three: script agents with triggerPoint: after_orchestrator. They see every
+        # earlier result and the answer itself. This is what runtime.py does for you.
+        after_phase = ScriptPhase(
+            registry.script_agents_after, registry.script_runners(), TRIGGER_POINT_AFTER
+        )
+        after = [] if result.stopped else await after_phase.run(
+            message, sink, result.script_results, result.output
+        )
+        result.script_results.extend(after)
+        if after:
+            await sink.settle()
     finally:
         await registry.aclose()
 
     print(f"{'─' * 72}")
+    if result.stopped:
+        print(f"stopped by         : {result.stopped_by} (stop_execution)")
     print(f"script agents run  : {', '.join(item.agent for item in result.script_results)}")
     print(f"orchestrator turns : {result.iterations}")
     print(f"agents used        : {', '.join(item.agent for item in result.agent_results)}")

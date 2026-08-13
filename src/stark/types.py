@@ -21,6 +21,17 @@ DEFAULT_MAX_OUTPUT_TOKENS = 4096
 DEFAULT_PRIORITY = 100
 DEFAULT_SCRIPT_TIMEOUT = 120
 
+# Where a script agent's automatic run sits relative to the orchestrator. Omitting
+# `triggerPoint` means there is no automatic run at all — the agent is reached only by
+# delegation.
+TRIGGER_POINT_BEFORE = "before_orchestrator"
+TRIGGER_POINT_AFTER = "after_orchestrator"
+TRIGGER_POINTS = (TRIGGER_POINT_BEFORE, TRIGGER_POINT_AFTER)
+
+# How a script agent was reached.
+INVOCATION_TRIGGER = "trigger"
+INVOCATION_DELEGATION = "delegation"
+
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-5"
 
@@ -66,10 +77,13 @@ class MCPServerConfig:
 class AgentConfig:
     """A validated agent loaded from `<agents>/<dir>/AGENT.md`.
 
-    Two shapes share this type. An `llm` agent runs a model with tools and is offered to
-    the orchestrator. A `script` agent runs a Python `run()` function with no model at
-    all, is never offered to the orchestrator, and is reached only by its `trigger_rule`
-    (or unconditionally, when it has none).
+    Two shapes share this type. An `llm` agent runs a model with tools. A `script` agent
+    runs a Python `run()` function with no model at all.
+
+    Both are offered to the orchestrator as delegation tools by default; a script agent
+    opts out with `avoid_orchestrator: true`. A script agent runs on its own only if it
+    names a `trigger_point` — before or after the orchestrator — and then whenever its
+    `trigger_rule` matches, or on every message if it has none.
     """
 
     name: str
@@ -94,6 +108,8 @@ class AgentConfig:
     send_output: bool = False
     timeout: int = DEFAULT_SCRIPT_TIMEOUT
     trigger_rule: TriggerRule | None = None
+    trigger_point: str | None = None
+    avoid_orchestrator: bool = False
 
     @property
     def is_script(self) -> bool:
@@ -102,6 +118,37 @@ class AgentConfig:
     @property
     def is_llm(self) -> bool:
         return self.type == AGENT_TYPE_LLM
+
+    @property
+    def delegatable(self) -> bool:
+        """Whether the orchestrator is offered this agent as a tool.
+
+        `avoid_orchestrator` is script-only metadata and stays False for `llm` agents,
+        which are always delegatable — delegation is the only way to reach them.
+        """
+        return not self.avoid_orchestrator
+
+    @property
+    def runs_automatically(self) -> bool:
+        """Whether this agent runs on its own, without the orchestrator asking.
+
+        Only a `trigger_point` turns that on. Without one a script agent is reached solely
+        by delegation, however its `trigger_rule` is written.
+        """
+        return self.is_script and self.trigger_point in TRIGGER_POINTS
+
+    @property
+    def runs_before_orchestrator(self) -> bool:
+        return self.runs_automatically and self.trigger_point == TRIGGER_POINT_BEFORE
+
+    @property
+    def runs_after_orchestrator(self) -> bool:
+        return self.runs_automatically and self.trigger_point == TRIGGER_POINT_AFTER
+
+    @property
+    def reachable(self) -> bool:
+        """Whether anything can ever run this agent."""
+        return self.delegatable or self.runs_automatically
 
     @property
     def tool_name(self) -> str:
@@ -117,10 +164,12 @@ class AgentConfig:
         return [server for server in self.mcp if server.enable]
 
     def triggered_by(self, values: dict[str, str | None]) -> bool:
-        """Whether this script agent should run for a message.
+        """Whether this script agent's automatic run should fire for a message.
 
-        A script agent with no rule is unconditional: it has no other way to be reached,
-        since script agents are never exposed to the orchestrator.
+        A script agent with no rule is unconditional *within its trigger point*; with no
+        trigger point there is no automatic run for this to gate. An explicit delegation
+        from the orchestrator ignores the rule either way, because the model asking for the
+        agent by name is the decision the rule would otherwise make.
         """
         if self.trigger_rule is None:
             return True
@@ -222,6 +271,9 @@ class ScriptResult:
     error: str | None = None
     priority: int = DEFAULT_PRIORITY
     sent_to_client: bool = False
+    invocation: str = INVOCATION_TRIGGER
+    trigger_point: str | None = None
+    stop_execution: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -242,6 +294,24 @@ class ScriptResult:
             seen = "internal context — the user has not seen this"
         return f"### {self.agent} ({seen})\n{body}"
 
+    def as_tool_content(self) -> str:
+        """How this result is returned when the orchestrator delegated to the script.
+
+        Mirrors `AgentResult.as_tool_content` so the model sees one shape whichever kind
+        of agent it called.
+        """
+        if self.error:
+            return f"[{self.agent} failed] {self.error}"
+        body = self.output.strip()
+        if not body:
+            return f"[{self.agent}] completed with no output."
+        if self.sent_to_client:
+            return (
+                f"{body}\n\n[This output was already posted to the user verbatim; "
+                "do not repeat it.]"
+            )
+        return body
+
 
 @dataclass
 class RunResult:
@@ -255,3 +325,9 @@ class RunResult:
     agent_results: list[AgentResult] = field(default_factory=list)
     script_results: list[ScriptResult] = field(default_factory=list)
     orchestrator_ran: bool = False
+    stopped_by: str | None = None
+
+    @property
+    def stopped(self) -> bool:
+        """Whether a script agent halted the run with `stop_execution`."""
+        return self.stopped_by is not None

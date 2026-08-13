@@ -6,7 +6,7 @@ import os
 from .config import Config
 from .listeners import CLI, Message, ResponseSink, build_listener, validate_listener
 from .logger import logger
-from .orchestration import Orchestrator, Registry, ScriptPhase
+from .orchestration import Orchestrator, Registry, ScriptPhase, stop_requested
 from .types import (
     DEFAULT_EFFORT,
     DEFAULT_INSTRUCTIONS,
@@ -15,6 +15,8 @@ from .types import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
     EFFORT_LEVELS,
+    TRIGGER_POINT_AFTER,
+    TRIGGER_POINT_BEFORE,
     ModelConfig,
     RunResult,
 )
@@ -75,35 +77,72 @@ async def run_async(
 
     # Step 1 — discover agents, bring MCP servers up, import script agents.
     registry = await Registry.create(agents, exclude_agents or [])
-    script_phase = ScriptPhase(registry.script_agents, registry.script_runners())
+    before_phase = ScriptPhase(
+        registry.script_agents_before, registry.script_runners(), TRIGGER_POINT_BEFORE
+    )
+    after_phase = ScriptPhase(
+        registry.script_agents_after, registry.script_runners(), TRIGGER_POINT_AFTER
+    )
     orchestrator = Orchestrator(registry, instructions, model)
 
+    script_count = before_phase.agent_count + after_phase.agent_count
     if registry.has_llm_agents:
         logger.info(
-            "Ready: %d llm agent(s) on %s/%s, %d script agent(s)",
+            "Ready: %d llm agent(s) on %s/%s, %d script agent(s) (%d before, %d after)",
             len(registry.llm_agents),
             model.provider,
             model.model,
-            script_phase.agent_count,
+            script_count,
+            before_phase.agent_count,
+            after_phase.agent_count,
         )
     else:
         logger.info(
             "Ready: %d script agent(s), no llm agents — no model will be called",
-            script_phase.agent_count,
+            script_count,
         )
 
     async def handle(message: Message, sink: ResponseSink) -> RunResult:
-        # Step 3a — deterministic script agents, in priority bands.
-        script_results = await script_phase.run(message, sink)
+        # Step 3a — deterministic script agents that run ahead of the model.
+        before = await before_phase.run(message, sink)
+
+        # A script can halt the run outright. Everything downstream is skipped, but the
+        # response is still closed out properly: the steps that did run are settled, and
+        # anything a script already posted stands as the reply.
+        halt = stop_requested(before)
+        if halt is not None:
+            await sink.final("")
+            return RunResult(
+                script_results=list(before), orchestrator_ran=False, stopped_by=halt.agent
+            )
 
         # Step 3b — the LLM orchestrator, but only if it has somewhere to route.
         if registry.has_llm_agents:
-            return await orchestrator.handle(message, sink, script_results)
+            result = await orchestrator.handle(message, sink, before)
+        else:
+            # Nothing to reason with. Close the response out silently: the script steps
+            # already told the user what happened.
+            await sink.final("")
+            result = RunResult(script_results=list(before), orchestrator_ran=False)
 
-        # Nothing to reason with. Close the response out silently: the script steps
-        # already told the user what happened.
-        await sink.final("")
-        return RunResult(script_results=script_results, orchestrator_ran=False)
+        # A script the orchestrator delegated to can halt the run too, which also means
+        # skipping the after phase.
+        if result.stopped:
+            return result
+
+        # Step 3c — script agents that act on the answer. They run whether or not the
+        # orchestrator did, so a deployment without llm agents still gets both phases.
+        after = await after_phase.run(message, sink, result.script_results, result.output)
+        if after:
+            result.script_results.extend(after)
+            halt = stop_requested(after)
+            if halt is not None:
+                result.stopped_by = halt.agent
+            # The answer has already gone out, so nothing else will close the progress
+            # display these steps reopened.
+            await sink.settle()
+
+        return result
 
     options = {"roster": registry.roster()} if kind == CLI else {}
     active = build_listener(kind, handle, config=settings, **options)

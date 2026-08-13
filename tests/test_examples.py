@@ -48,6 +48,7 @@ async def test_discovery_matches_the_documented_folder():
         "writer-agent",
         "draft-agent",
         "ticket-opener",
+        "answer-archiver",
     }
 
 
@@ -55,10 +56,19 @@ async def test_the_example_script_agent_is_wired_as_documented():
     agents = {agent.name: agent for agent in discover_agents(AGENTS)}
     ticket = agents["ticket-opener"]
 
+    from stark.types import TRIGGER_POINT_BEFORE
+
     assert ticket.is_script
     assert ticket.script == "open_ticket.py"
     assert (ticket.priority, ticket.send_output) == (200, True)
     assert ticket.trigger_rule is not None
+    # The trigger point is what gives the rule something to gate.
+    assert ticket.trigger_point == TRIGGER_POINT_BEFORE
+    assert ticket.runs_before_orchestrator is True
+    # Hidden from the orchestrator, so the marker is the only way a ticket gets opened.
+    assert ticket.avoid_orchestrator is True
+    assert ticket.delegatable is False
+    assert ticket.reachable is True
     # A script agent needs no model.
     assert (ticket.provider, ticket.model) == ("", "")
 
@@ -102,9 +112,78 @@ async def test_the_example_script_agent_is_idempotent_per_thread():
     assert first.output == second.output
 
 
+async def test_the_example_after_orchestrator_agent_is_wired_as_documented():
+    from stark.types import TRIGGER_POINT_AFTER
+
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    archiver = agents["answer-archiver"]
+
+    assert archiver.is_script
+    assert archiver.trigger_point == TRIGGER_POINT_AFTER
+    assert archiver.runs_after_orchestrator is True
+    # Bookkeeping, not something a model should decide to invoke.
+    assert archiver.avoid_orchestrator is True
+    assert archiver.delegatable is False
+    assert archiver.send_output is True
+    # No rule, so it runs for every message.
+    assert archiver.trigger_rule is None
+    assert archiver.triggered_by({"text": "anything"}) is True
+
+
+async def test_the_example_after_orchestrator_agent_files_the_answer():
+    from stark.orchestration import ScriptRunner, build_payload, load_entry_point
+    from stark.listeners.base import Message
+    from stark.types import ScriptResult
+
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    archiver = agents["answer-archiver"]
+    runner = ScriptRunner(archiver, load_entry_point(archiver))
+
+    payload = build_payload(
+        archiver,
+        Message(text="how did EMEA do?", user="U1", thread="1.0"),
+        prior=[ScriptResult(agent="ticket-opener", output="SUPPORT-1234")],
+        orchestrator_output="EMEA Q2 sales were $4,480,000.",
+    )
+    result = await runner.run(payload)
+
+    assert result.succeeded
+    assert "AUDIT-" in result.output
+    assert "after ticket-opener" in result.output
+
+    # Same thread and same answer must archive under the same reference.
+    assert (await runner.run(build_payload(
+        archiver,
+        Message(text="how did EMEA do?", user="U1", thread="1.0"),
+        prior=[ScriptResult(agent="ticket-opener", output="SUPPORT-1234")],
+        orchestrator_output="EMEA Q2 sales were $4,480,000.",
+    ))).output == result.output
+
+
+async def test_the_example_after_orchestrator_agent_stays_quiet_with_no_answer():
+    """The no-llm-agents case: nothing was answered, so there is nothing to file."""
+    from stark.orchestration import ScriptRunner, build_payload, load_entry_point
+    from stark.listeners.base import Message
+
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    archiver = agents["answer-archiver"]
+    runner = ScriptRunner(archiver, load_entry_point(archiver))
+
+    result = await runner.run(build_payload(archiver, Message(text="hi")))
+
+    assert result.succeeded
+    assert result.output == ""
+
+
 async def test_exclude_agents_drops_the_draft():
     names = {agent.name for agent in discover_agents(AGENTS, exclude_agents=["draft-agent"])}
-    assert names == {"sales-agent", "inventory-agent", "writer-agent", "ticket-opener"}
+    assert names == {
+        "sales-agent",
+        "inventory-agent",
+        "writer-agent",
+        "ticket-opener",
+        "answer-archiver",
+    }
 
 
 async def test_frontmatter_is_wired_as_documented():
@@ -238,3 +317,7 @@ def test_offline_walkthrough_runs_with_no_credentials():
     assert "reorder" in result.stdout.lower()
     for agent in ("sales-agent", "inventory-agent", "writer-agent"):
         assert agent in result.stdout
+
+    # Both script phases ran, in order, around the orchestrator.
+    assert "script agents run  : ticket-opener, answer-archiver" in result.stdout
+    assert result.stdout.index("Answer:") < result.stdout.index("Archived as")

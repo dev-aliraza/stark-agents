@@ -11,12 +11,21 @@ starts their MCP servers, and serves queries through a CLI or Slack listener:
 from .config import Config, ConfigError, SlackConfig
 from .listeners import Listener, Message, ResponseSink
 from .logger import configure_logging, logger
-from .orchestration import AgentRunner, Orchestrator, Registry, ScriptPhase, ScriptRunner
+from .orchestration import (
+    AgentRunner,
+    Orchestrator,
+    Registry,
+    ScriptPhase,
+    ScriptRunner,
+    stop_requested,
+)
 from .parsers import discover_agents, parse_agent_file
 from .runtime import orchestrator_model, run, run_async
 from .triggers import TriggerRule, TriggerRuleError
 from .types import (
     DEFAULT_INSTRUCTIONS,
+    TRIGGER_POINT_AFTER,
+    TRIGGER_POINT_BEFORE,
     AgentConfig,
     AgentResult,
     MCPServerConfig,
@@ -44,6 +53,9 @@ __all__ = [
     "ScriptPhase",
     "ScriptRunner",
     "ScriptResult",
+    "stop_requested",
+    "TRIGGER_POINT_BEFORE",
+    "TRIGGER_POINT_AFTER",
     "TriggerRule",
     "TriggerRuleError",
     "Listener",

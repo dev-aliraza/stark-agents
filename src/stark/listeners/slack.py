@@ -250,6 +250,15 @@ class SlackSink(ResponseSink):
         await self._settle(failed=True)
         self.answer_ts = await self._post(f"{self.config.failed_emoji} {text}")
 
+    async def settle(self) -> None:
+        """Re-close the progress message after work that ran past `final`.
+
+        An `after_orchestrator` script agent adds steps once the answer has been posted,
+        which restarts the coalescer. Without this the last edit would land whenever that
+        loop next ticked, or not at all if the process went idle first.
+        """
+        await self._settle()
+
     async def _settle(self, failed: bool = False) -> None:
         """Close out the progress message: nothing may be left spinning."""
         await self._stop_flusher()

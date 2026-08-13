@@ -162,4 +162,7 @@ class CLIListener(Listener):
             parts.append(f"{len(result.agent_results)} agent call(s)")
         if result.cost:
             parts.append(f"${result.cost:.4f}")
+        if result.stopped:
+            # Otherwise a halted run looks identical to one that had nothing to say.
+            parts.append(f"stopped by {result.stopped_by}")
         return " · ".join(parts)

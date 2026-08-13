@@ -6,9 +6,18 @@ from typing import Any
 from ..listeners.base import Message, ResponseSink
 from ..llm import LLMClient
 from ..logger import get_logger
-from ..types import ModelConfig, RunResult, ScriptResult, ToolCall
+from ..types import (
+    INVOCATION_DELEGATION,
+    AgentConfig,
+    ModelConfig,
+    RunResult,
+    ScriptResult,
+    ToolCall,
+)
 from .agent_runner import AgentRunner
 from .registry import Registry
+from .script_phase import stop_requested
+from .script_runner import build_payload
 
 logger = get_logger("orchestrator")
 
@@ -22,6 +31,9 @@ see this conversation, so every task you send must stand on its own.
   they run in parallel.
 - When one agent's output feeds another, call them in sequence and pass what you
   learned in the `context` field.
+- An agent marked as a deterministic script performs a fixed action rather than
+  reasoning about your request. Calling one is an action with real effects, so call it
+  only when the user's request needs that action taken.
 - Answer directly when no agent is relevant; do not delegate for its own sake.
 - Once the work is done, reply to the user yourself with the answer — they see your
   message, not the agents' raw output."""
@@ -117,8 +129,25 @@ class Orchestrator:
                 await sink.final(result.output)
                 return result
 
-            responses = await self._delegate(completion.tool_calls, result, sink)
+            # Only results from this turn can halt the loop; anything handed in by the
+            # caller was its own to act on.
+            already = len(result.script_results)
+            responses = await self._delegate(completion.tool_calls, message, result, sink)
             messages.extend(responses)
+
+            # A delegated script agent can halt the run. The tool results from this turn are
+            # discarded rather than sent back for another turn — "stop" has to mean the model
+            # is not consulted again, or it would answer around the halt.
+            halt = stop_requested(result.script_results[already:])
+            if halt is not None:
+                result.stopped_by = halt.agent
+                logger.info(
+                    "Script agent '%s' stopped the run after %d orchestrator turn(s)",
+                    halt.agent,
+                    result.iterations,
+                )
+                await sink.final("")
+                return result
 
         result.max_iterations_reached = True
         result.output = completion.content.strip()
@@ -132,6 +161,7 @@ class Orchestrator:
     async def _delegate(
         self,
         calls: list[ToolCall],
+        message: Message,
         result: RunResult,
         sink: ResponseSink,
     ) -> list[dict[str, Any]]:
@@ -158,9 +188,15 @@ class Orchestrator:
                     "content": "[error] 'task' is required; describe what this agent should do",
                 }
 
-            runner = AgentRunner(agent, self.registry.toolbox_for(agent))
             # The tool-call id is unique per turn, so it keys this delegation's progress
             # even when the same agent is called twice at once.
+            if agent.is_script:
+                content = await self._delegate_to_script(
+                    agent, task, context, message, result, sink, key=call.id
+                )
+                return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+            runner = AgentRunner(agent, self.registry.toolbox_for(agent))
             agent_result = await runner.run(task, context, sink, key=call.id)
             result.agent_results.append(agent_result)
             result.cost += agent_result.cost
@@ -172,3 +208,50 @@ class Orchestrator:
             }
 
         return list(await asyncio.gather(*(execute(call) for call in calls)))
+
+    async def _delegate_to_script(
+        self,
+        agent: AgentConfig,
+        task: str,
+        context: str,
+        message: Message,
+        result: RunResult,
+        sink: ResponseSink,
+        key: str,
+    ) -> str:
+        """Run a delegated script agent and return its tool content.
+
+        The trigger rule is not consulted: it governs the automatic run, and the model
+        naming the agent is the same decision made explicitly. `send_output` still holds,
+        so a script that promises to show the user its own output does so here too.
+        """
+        runner = self.registry.script_runner_for(agent)
+        if runner is None:
+            failure = f"[{agent.name} failed] script was not loaded at startup"
+            await sink.event("agent_error", f"{agent.name}: {failure}", key=key)
+            return failure
+
+        await sink.event("agent_start", f"{agent.name} (script): {task}", key=key)
+
+        script_result = await runner.run(
+            build_payload(
+                agent,
+                message,
+                invocation=INVOCATION_DELEGATION,
+                prior=result.script_results,
+                task=task,
+                context=context,
+            )
+        )
+        result.script_results.append(script_result)
+
+        if script_result.error:
+            await sink.event("agent_error", f"{agent.name}: {script_result.error}", key=key)
+            return script_result.as_tool_content()
+
+        if agent.send_output and script_result.output.strip():
+            await sink.message(script_result.output)
+            script_result.sent_to_client = True
+
+        await sink.event("agent_end", f"{agent.name} finished", key=key)
+        return script_result.as_tool_content()

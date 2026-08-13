@@ -66,6 +66,15 @@ class ResponseSink(ABC):
     async def error(self, text: str) -> None:
         """Report that the run failed."""
 
+    async def settle(self) -> None:
+        """Close out any progress display, after the very last event of a run.
+
+        `final` and `error` already do this, but an `after_orchestrator` script agent
+        reports progress after the answer has been delivered. This is called once at the
+        end so a listener that renders live progress can leave nothing spinning. The
+        default does nothing, which is right for any sink that only appends.
+        """
+
 
 # A listener hands each inbound message to this callable along with a sink.
 Handler = Callable[[Message, ResponseSink], Awaitable[RunResult]]

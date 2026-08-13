@@ -20,6 +20,7 @@ from ..types import (
     DEFAULT_PRIORITY,
     DEFAULT_SCRIPT_TIMEOUT,
     EFFORT_LEVELS,
+    TRIGGER_POINTS,
     AgentConfig,
     MCPServerConfig,
 )
@@ -40,7 +41,15 @@ REQUIRED_KEYS = LLM_REQUIRED_KEYS
 
 # Keys that only mean something for one type; present on the other, they are ignored.
 LLM_ONLY_KEYS = ("provider", "model", "effort", "max_iterations", "max_output_tokens", "mcp")
-SCRIPT_ONLY_KEYS = ("script", "priority", "send_output", "triggerRule", "timeout")
+SCRIPT_ONLY_KEYS = (
+    "script",
+    "priority",
+    "send_output",
+    "triggerRule",
+    "triggerPoint",
+    "avoid_orchestrator",
+    "timeout",
+)
 
 _STDIO = "stdio"
 _HTTP = "streamable_http"
@@ -122,6 +131,52 @@ def _parse_script(metadata: dict[str, Any], source: Path) -> str:
         raise AgentValidationError(f"{source}: script '{script}' does not exist")
 
     return script
+
+
+def _parse_trigger_point(metadata: dict[str, Any], source: Path) -> str | None:
+    """Validate `triggerPoint`, or return None when the agent has no automatic run.
+
+    Omitting it is the quiet, safe default: the agent is reached only when the orchestrator
+    asks for it. A *wrong* value is rejected rather than defaulted, because defaulting would
+    silently move the agent to the wrong side of the model.
+    """
+    raw = metadata.get("triggerPoint")
+    if raw is None:
+        return None
+    point = str(raw).strip().lower()
+    if point not in TRIGGER_POINTS:
+        raise AgentValidationError(
+            f"{source}: unknown triggerPoint '{raw}'; expected one of "
+            f"{', '.join(TRIGGER_POINTS)}"
+        )
+    return point
+
+
+def _warn_on_unreachable_script(
+    trigger_point: str | None,
+    avoid_orchestrator: bool,
+    has_trigger_rule: bool,
+    source: Path,
+) -> None:
+    """Flag a script agent that nothing can reach, or a rule that nothing consults.
+
+    Both come from the same slip: `triggerPoint` is what turns the automatic run on, and it
+    is easy to write a `triggerRule` expecting it to be enough on its own.
+    """
+    if trigger_point is None and avoid_orchestrator:
+        logger.warning(
+            "%s: this agent can never run — it has no 'triggerPoint', so nothing fires it "
+            "automatically, and 'avoid_orchestrator: true' keeps it off the orchestrator. "
+            "Add a triggerPoint, or drop avoid_orchestrator.",
+            source,
+        )
+    elif trigger_point is None and has_trigger_rule:
+        logger.warning(
+            "%s: 'triggerRule' does nothing without a 'triggerPoint' — with no trigger "
+            "point this agent only runs when the orchestrator delegates to it, and "
+            "delegation does not consult the rule.",
+            source,
+        )
 
 
 def _parse_trigger_rule(metadata: dict[str, Any], source: Path):
@@ -326,13 +381,21 @@ def parse_agent_file(agent_file: Path) -> AgentConfig:
     }
 
     if agent_type == AGENT_TYPE_SCRIPT:
+        trigger_rule = _parse_trigger_rule(metadata, agent_file)
+        trigger_point = _parse_trigger_point(metadata, agent_file)
+        avoid_orchestrator = _optional_bool(metadata, "avoid_orchestrator", agent_file)
+        _warn_on_unreachable_script(
+            trigger_point, avoid_orchestrator, trigger_rule is not None, agent_file
+        )
         return AgentConfig(
             **common,
             script=_parse_script(metadata, agent_file),
             priority=_optional_int(metadata, "priority", DEFAULT_PRIORITY, agent_file),
             send_output=_optional_bool(metadata, "send_output", agent_file),
             timeout=_optional_int(metadata, "timeout", DEFAULT_SCRIPT_TIMEOUT, agent_file),
-            trigger_rule=_parse_trigger_rule(metadata, agent_file),
+            trigger_rule=trigger_rule,
+            trigger_point=trigger_point,
+            avoid_orchestrator=avoid_orchestrator,
         )
 
     return AgentConfig(

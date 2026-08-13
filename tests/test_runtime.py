@@ -22,7 +22,9 @@ def write_script_agent(root, name: str, *, send_output: bool, trigger: str | Non
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "handler.py").write_text(SCRIPT, encoding="utf-8")
-    extra = f"send_output: {str(send_output).lower()}\n"
+    # `triggerPoint` is what opts the agent into running on its own, which is the whole
+    # subject of this file.
+    extra = f"send_output: {str(send_output).lower()}\ntriggerPoint: before_orchestrator\n"
     if trigger:
         extra += f"triggerRule: '{trigger}'\n"
     (directory / "AGENT.md").write_text(
@@ -172,7 +174,7 @@ async def test_a_failing_script_does_not_stop_the_orchestrator(
     )
     (directory / "AGENT.md").write_text(
         "---\nname: broken\ndescription: Fails.\ntype: script\nscript: handler.py\n"
-        "---\n\nBody.\n",
+        "triggerPoint: before_orchestrator\n---\n\nBody.\n",
         encoding="utf-8",
     )
     write_llm_agent(tmp_path)

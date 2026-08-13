@@ -40,9 +40,12 @@ Then ask something that needs two agents, so you can watch them run in parallel:
 
 ```
 examples/agents/
-├── ticket-opener/        type: script — a triggerRule fires run(), no LLM at all
+├── ticket-opener/        type: script — a triggerRule fires run() before the model
 │   ├── AGENT.md
 │   └── open_ticket.py
+├── answer-archiver/      type: script — runs after the orchestrator, on its answer
+│   ├── AGENT.md
+│   └── archive_answer.py
 ├── sales-agent/          runs a local script through workspace_run
 │   ├── AGENT.md
 │   └── query_sales.py
@@ -61,14 +64,20 @@ The `=====` marker in a message is what fires `ticket-opener`, so try:
 
 > ===== ArgoCD is down in prod =====
 
-You'll see the script step run, its ticket posted as its own message, and then the
-orchestrator answering with that ticket already in its context.
+You'll see the script step run, its ticket posted as its own message, then the orchestrator
+answering with that ticket already in its context — and finally `answer-archiver`, which
+runs on *every* message and files whatever the orchestrator just said.
+
+To watch a script end the query instead, make `open_ticket.py` return
+`{"stop_execution": True, "output": "Ignored: duplicate."}`. The ticket step still closes and
+its message still posts, but the orchestrator and `answer-archiver` are skipped entirely.
 
 Between them they cover every discovery rule and both kinds of tool:
 
 | Agent | Demonstrates |
 | --- | --- |
-| `ticket-opener` | A `type: script` agent: a `triggerRule` fires `open_ticket.py` with **no model involved**, `priority: 200` puts it ahead of the default band, and `send_output: true` posts its result to the user |
+| `ticket-opener` | A `type: script` agent: `triggerPoint: before_orchestrator` plus a `triggerRule` fires `open_ticket.py` with **no model involved**, `priority: 200` puts it ahead of the default band, `send_output: true` posts its result to the user, and `avoid_orchestrator: true` means the marker is the only thing that can open a ticket |
+| `answer-archiver` | `triggerPoint: after_orchestrator` — it runs once the answer is out and receives it as `orchestrator_output`, with `avoid_orchestrator: true` keeping it off the orchestrator's tool list |
 | `sales-agent` | An `AGENT.md` instructing the agent to run its own script; `workspace_run` executes it in a subprocess, sandboxed to the agent's directory |
 | `inventory-agent` | An `mcp:` list with one enabled stdio server and one parked (`enable: false`) HTTP server, `${PYTHON:-python3}` env expansion, and `exclude:` hiding a destructive tool from the model |
 | `writer-agent` | An agent that needs no tools, driven purely by its instructions |

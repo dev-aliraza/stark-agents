@@ -41,7 +41,11 @@ def write_script_agent(
     priority: int | None = None,
     send_output: bool | None = None,
     trigger: str | None = None,
+    trigger_point: str = "before_orchestrator",
+    avoid_orchestrator: bool | None = None,
 ) -> None:
+    """Write a script agent. This file is about the phases, so `triggerPoint` is on by
+    default; pass `trigger_point=""` to omit it and get a delegation-only agent."""
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "handler.py").write_text(body, encoding="utf-8")
@@ -53,6 +57,10 @@ def write_script_agent(
         extra += f"send_output: {str(send_output).lower()}\n"
     if trigger is not None:
         extra += f"triggerRule: '{trigger}'\n"
+    if trigger_point:
+        extra += f"triggerPoint: {trigger_point}\n"
+    if avoid_orchestrator is not None:
+        extra += f"avoid_orchestrator: {str(avoid_orchestrator).lower()}\n"
 
     (directory / "AGENT.md").write_text(
         f"---\nname: {name}\ndescription: {name} does things.\n"
@@ -76,7 +84,7 @@ ECHO = "def run(message):\n    return {name!r}\n"
 
 async def build(tmp_path) -> tuple[Registry, ScriptPhase]:
     registry = await Registry.create(tmp_path)
-    return registry, ScriptPhase(registry.script_agents, registry.script_runners())
+    return registry, ScriptPhase(registry.script_agents_before, registry.script_runners())
 
 
 def message(text: str = "hello", **fields) -> Message:
@@ -89,7 +97,7 @@ def message(text: str = "hello", **fields) -> Message:
 def config(name: str, priority: int) -> AgentConfig:
     return AgentConfig(
         name=name, description="d", instructions="", path=None, type="script",
-        script="handler.py", priority=priority,
+        script="handler.py", priority=priority, trigger_point="before_orchestrator",
     )
 
 
@@ -448,14 +456,14 @@ async def test_each_script_agent_emits_a_start_and_end_keyed_by_name(tmp_path):
 # --- interaction with llm agents -----------------------------------------------------
 
 
-async def test_script_agents_are_not_offered_to_the_orchestrator(tmp_path):
+async def test_script_agents_are_offered_to_the_orchestrator_by_default(tmp_path):
     write_script_agent(tmp_path, "deterministic", ECHO.format(name="deterministic"))
     write_llm_agent(tmp_path, "reasoner")
 
     registry = await Registry.create(tmp_path)
     try:
         names = {tool["function"]["name"] for tool in registry.delegation_tools()}
-        assert names == {"agent__reasoner"}
+        assert names == {"agent__reasoner", "agent__deterministic"}
         assert registry.has_llm_agents is True
         assert [agent.name for agent in registry.script_agents] == ["deterministic"]
     finally:
@@ -468,7 +476,10 @@ async def test_registry_with_only_script_agents_has_no_llm_agents(tmp_path):
     registry = await Registry.create(tmp_path)
     try:
         assert registry.has_llm_agents is False
-        assert registry.delegation_tools() == []
+        # The tool exists, but with no llm agents the orchestrator never runs to use it.
+        assert [tool["function"]["name"] for tool in registry.delegation_tools()] == [
+            "agent__deterministic"
+        ]
     finally:
         await registry.aclose()
 
@@ -513,5 +524,23 @@ async def test_roster_lists_script_agents_separately(tmp_path):
     assert "Script agents" in roster
     assert "priority 200" in roster
     assert "send_output" in roster
-    # A script agent must never be advertised with a delegation tool name.
-    assert "agent__deterministic" not in roster
+    assert "before_orchestrator" in roster
+    # Delegatable by default, so it is advertised with a tool name and marked as a script.
+    assert "agent__deterministic" in roster
+    assert "deterministic script" in roster
+
+
+async def test_roster_marks_a_hidden_script_agent_as_not_delegatable(tmp_path):
+    write_script_agent(
+        tmp_path, "hidden", ECHO.format(name="hidden"), avoid_orchestrator=True
+    )
+    write_llm_agent(tmp_path, "reasoner")
+
+    registry = await Registry.create(tmp_path)
+    try:
+        roster = registry.roster()
+    finally:
+        await registry.aclose()
+
+    assert "not delegatable" in roster
+    assert "agent__hidden" not in roster

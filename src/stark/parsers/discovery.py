@@ -72,10 +72,13 @@ def discover_agents(
         agents.append(config)
         if config.is_script:
             logger.info(
-                "Loaded script agent '%s' (script=%s, priority=%s)",
+                "Loaded script agent '%s' (script=%s, priority=%s, triggerPoint=%s, "
+                "orchestrator=%s)",
                 config.name,
                 config.script,
                 config.priority,
+                config.trigger_point or "none",
+                "delegatable" if config.delegatable else "hidden",
             )
         else:
             enabled = config.enabled_mcp_servers

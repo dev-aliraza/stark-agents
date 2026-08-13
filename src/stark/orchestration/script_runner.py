@@ -7,16 +7,29 @@ import importlib.util
 import inspect
 import json
 import sys
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from ..errors import StarkError
+from ..listeners.base import Message
 from ..logger import get_logger
-from ..types import AgentConfig, ScriptResult
+from ..types import (
+    INVOCATION_DELEGATION,
+    INVOCATION_TRIGGER,
+    AgentConfig,
+    ScriptResult,
+)
 
 logger = get_logger("script")
 
 ENTRY_POINT = "run"
 MAX_OUTPUT_CHARS = 20_000
+
+# Reserved keys in a mapping returned by `run()`.
+STOP_KEY = "stop_execution"
+OUTPUT_KEY = "output"
+
+_TRUE = {"true", "yes", "1", "on"}
+_FALSE = {"false", "no", "0", "off", ""}
 
 
 class ScriptLoadError(StarkError):
@@ -56,6 +69,88 @@ def load_entry_point(agent: AgentConfig) -> Callable[..., Any]:
     return entry
 
 
+def build_payload(
+    agent: AgentConfig,
+    message: Message,
+    *,
+    invocation: str = INVOCATION_TRIGGER,
+    prior: Sequence[ScriptResult] = (),
+    task: str = "",
+    context: str = "",
+    orchestrator_output: str = "",
+) -> dict[str, Any]:
+    """What `run()` receives.
+
+    A plain dict, not the Message dataclass, so a script never imports stark and can be
+    unit-tested on its own. The same keys are present however the agent was reached, so
+    one script can serve both a trigger and a delegation:
+
+    * `text` is always the user's message, never the orchestrator's instruction.
+    * `task` and `context` are set only when the orchestrator delegated; `invocation`
+      says which happened.
+    * `orchestrator_output` is the answer the orchestrator produced, so it is only
+      populated for an `after_orchestrator` run.
+    """
+    return {
+        "text": message.text,
+        "user": message.user,
+        "channel": message.channel,
+        "thread": message.thread,
+        "meta": message.meta,
+        "agent": agent.name,
+        "workspace": str(agent.path),
+        "invocation": invocation,
+        "task": task,
+        "context": context,
+        "orchestrator_output": orchestrator_output,
+        "prior_outputs": [
+            {"agent": item.agent, "output": item.output, "error": item.error}
+            for item in prior
+        ],
+    }
+
+
+def _as_stop_flag(raw: Any, agent: str) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in _TRUE:
+        return True
+    if text in _FALSE:
+        return False
+    logger.warning(
+        "Script agent '%s' returned %s=%r, which is not a boolean; treating it as false",
+        agent,
+        STOP_KEY,
+        raw,
+    )
+    return False
+
+
+def extract_stop(value: Any, agent: str) -> tuple[bool, Any]:
+    """Split a `stop_execution` request out of whatever `run()` returned.
+
+    A script asks to halt the run by returning a mapping with `stop_execution: true`. The
+    flag is a control signal, not output, so it is removed before the rest is rendered:
+
+    * `{"stop_execution": True}` → stop, with nothing to show.
+    * `{"stop_execution": True, "output": "Ignored: duplicate"}` → stop, showing that text.
+    * `{"stop_execution": True, "reason": "spam"}` → stop, showing `{"reason": "spam"}`.
+
+    Any other return type is output and nothing else, so a script that never wants to stop
+    the run needs to know nothing about this.
+    """
+    if not isinstance(value, dict) or STOP_KEY not in value:
+        return False, value
+
+    remaining = {key: item for key, item in value.items() if key != STOP_KEY}
+    stop = _as_stop_flag(value[STOP_KEY], agent)
+
+    if OUTPUT_KEY in remaining and len(remaining) == 1:
+        return stop, remaining[OUTPUT_KEY]
+    return stop, remaining or None
+
+
 def _as_text(value: Any) -> str:
     """Normalise whatever `run()` returned into text for the client and the model."""
     if value is None:
@@ -88,7 +183,15 @@ class ScriptRunner:
         Never raises: a failing script is reported as a `ScriptResult` with an error so
         the phase can carry on and the orchestrator still learns what happened.
         """
-        result = ScriptResult(agent=self.agent.name, priority=self.agent.priority)
+        invocation = str(payload.get("invocation") or INVOCATION_TRIGGER)
+        if invocation not in (INVOCATION_TRIGGER, INVOCATION_DELEGATION):
+            invocation = INVOCATION_TRIGGER
+        result = ScriptResult(
+            agent=self.agent.name,
+            priority=self.agent.priority,
+            invocation=invocation,
+            trigger_point=self.agent.trigger_point,
+        )
 
         try:
             value = await asyncio.wait_for(self._invoke(payload), timeout=self.agent.timeout)
@@ -103,7 +206,14 @@ class ScriptRunner:
             logger.error("Script agent '%s' failed: %s", self.agent.name, result.error)
             return result
 
-        result.output = _as_text(value)
+        result.stop_execution, output = extract_stop(value, self.agent.name)
+        result.output = _as_text(output)
+        if result.stop_execution:
+            logger.info(
+                "Script agent '%s' requested %s; nothing further will run for this message",
+                self.agent.name,
+                STOP_KEY,
+            )
         return result
 
     async def _invoke(self, payload: dict[str, Any]) -> Any:
