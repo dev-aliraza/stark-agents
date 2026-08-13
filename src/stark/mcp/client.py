@@ -70,9 +70,9 @@ def _filter(tools: list[Tool], include: list[str], exclude: list[str]) -> list[T
 class MCPServer:
     """A single connected MCP server, held open for the process lifetime."""
 
-    def __init__(self, config: MCPServerConfig, workspace: Path):
+    def __init__(self, config: MCPServerConfig, agent_dir: Path):
         self.config = config
-        self.workspace = workspace
+        self.agent_dir = agent_dir
         self.session: ClientSession | None = None
         self.tools: list[dict[str, Any]] = []
 
@@ -139,7 +139,7 @@ class MCPServer:
                         command=command,
                         args=self.config.args,
                         env={**get_default_environment(), **self.config.env},
-                        cwd=str(self.workspace),
+                        cwd=str(self.agent_dir),
                     )
                 )
             )

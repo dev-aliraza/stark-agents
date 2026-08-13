@@ -10,22 +10,32 @@ from ..logger import get_logger
 
 logger = get_logger("tools")
 
-LIST = "workspace_list"
-READ = "workspace_read"
-RUN = "workspace_run"
+LIST = "file_list"
+READ = "file_read"
+RUN = "file_run"
+WRITE = "file_write"
+DELETE = "file_delete"
 
-BUILTIN_TOOL_NAMES = (LIST, READ, RUN)
+BUILTIN_TOOL_NAMES = (LIST, READ, RUN, WRITE, DELETE)
 
 MAX_READ_CHARS = 40_000
 MAX_OUTPUT_CHARS = 20_000
+# Refused rather than truncated: silently cutting a file in half is data loss disguised
+# as success.
+MAX_WRITE_CHARS = 100_000
 DEFAULT_TIMEOUT = 120
 MAX_TIMEOUT = 900
+
+# An agent's own definition is configuration, not data. Overwriting it changes what the
+# agent is on the next boot, and deleting it removes the agent entirely, so neither is
+# something a model should be able to do while carrying out a task.
+PROTECTED_NAMES = ("AGENT.md",)
 
 _IGNORED = {"__pycache__", ".git", ".venv", "venv", "node_modules", ".DS_Store"}
 
 
 def schemas() -> list[dict[str, Any]]:
-    """Tool schemas for the workspace toolset given to every agent."""
+    """Tool schemas for the file toolset given to every agent."""
     return [
         {
             "type": "function",
@@ -53,6 +63,63 @@ def schemas() -> list[dict[str, Any]]:
                 "description": (
                     "Read a UTF-8 text file from your own agent directory, so you can "
                     "inspect a script or reference file before using it."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path relative to your agent directory.",
+                        }
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": WRITE,
+                "description": (
+                    "Create a UTF-8 text file in your own agent directory, or replace one "
+                    "you already have. Use this to save a result, a report, or a script "
+                    "you intend to run. Refuses to replace an existing file unless "
+                    "'overwrite' is true, so read it first if you meant to change it."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "Path relative to your agent directory. Missing parent "
+                                "folders are created."
+                            ),
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The complete file contents.",
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": (
+                                "Set true to replace the file if it already exists. "
+                                "Defaults to false."
+                            ),
+                        },
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": DELETE,
+                "description": (
+                    "Delete a file from your own agent directory, or an empty folder. "
+                    "This cannot be undone, so only delete something you created or were "
+                    "told to remove. A folder with anything in it is refused."
                 ),
                 "parameters": {
                     "type": "object",
@@ -106,11 +173,17 @@ def _truncate(text: str, limit: int) -> str:
     return f"{text[:limit]}\n\n[truncated at {limit} characters]"
 
 
-class WorkspaceTools:
+class FileTools:
     """File and script access confined to a single agent's directory.
 
-    Every path an agent supplies is resolved and checked against its own directory,
-    so a delegated task cannot read or execute anything elsewhere on the machine.
+    Every path an agent supplies is resolved and checked against its own directory, so a
+    delegated task cannot read, write, delete or execute anything elsewhere on the machine.
+
+    Note what that does and does not bound. It confines the *paths* an agent may name, not
+    the process it starts: a script reached through `file_run` is ordinary local code
+    with the host user's permissions. Writing and deleting are offered on the same terms —
+    a script could already do both — but an agent's own `AGENT.md` is off limits either
+    way, since that is the definition of the agent rather than its data.
     """
 
     def __init__(self, root: Path):
@@ -127,12 +200,32 @@ class WorkspaceTools:
             )
         return candidate
 
+    def _resolve_mutable(self, raw_path: str, verb: str) -> Path:
+        """Resolve a path an agent wants to change, refusing the ones it must not."""
+        path = self._resolve(raw_path)
+        if path == self.root:
+            raise ValueError(f"cannot {verb} your agent directory itself")
+        if path.name in PROTECTED_NAMES:
+            raise ValueError(
+                f"cannot {verb} '{path.name}' — it defines this agent. Ask whoever "
+                "maintains the agent to change it."
+            )
+        return path
+
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         try:
             if tool_name == LIST:
                 return self._list(str(arguments.get("pattern") or "*"))
             if tool_name == READ:
                 return self._read(str(arguments.get("path") or ""))
+            if tool_name == WRITE:
+                return self._write(
+                    str(arguments.get("path") or ""),
+                    arguments.get("content"),
+                    bool(arguments.get("overwrite")),
+                )
+            if tool_name == DELETE:
+                return self._delete(str(arguments.get("path") or ""))
             if tool_name == RUN:
                 return await self._run(
                     str(arguments.get("script") or ""),
@@ -142,9 +235,9 @@ class WorkspaceTools:
         except ValueError as exc:
             return f"[error] {exc}"
         except Exception as exc:
-            logger.debug("Workspace tool %s failed: %s", tool_name, exc)
+            logger.debug("File tool %s failed: %s", tool_name, exc)
             return f"[error] {tool_name} failed: {exc}"
-        return f"[error] unknown workspace tool '{tool_name}'"
+        return f"[error] unknown file tool '{tool_name}'"
 
     def _list(self, pattern: str) -> str:
         entries = sorted(
@@ -171,6 +264,64 @@ class WorkspaceTools:
         if not path.is_file():
             return f"[error] no such file: {raw_path}"
         return _truncate(path.read_text(encoding="utf-8", errors="replace"), MAX_READ_CHARS)
+
+    def _write(self, raw_path: str, raw_content: Any, overwrite: bool) -> str:
+        if not raw_path:
+            return "[error] 'path' is required"
+        if raw_content is None:
+            # An absent `content` is far more likely a malformed call than an intent to
+            # create an empty file, and truncating an existing file by accident is costly.
+            return "[error] 'content' is required; pass an empty string to create an empty file"
+
+        content = raw_content if isinstance(raw_content, str) else str(raw_content)
+        if len(content) > MAX_WRITE_CHARS:
+            return (
+                f"[error] content is {len(content)} characters, over the "
+                f"{MAX_WRITE_CHARS} limit; write less, or split it across files"
+            )
+
+        path = self._resolve_mutable(raw_path, "overwrite")
+        if path.is_dir():
+            return f"[error] {raw_path} is a folder, not a file"
+        existed = path.exists()
+        if existed and not overwrite:
+            return (
+                f"[error] {raw_path} already exists; read it first, then pass "
+                "overwrite=true if you really mean to replace it"
+            )
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+        logger.info("%s %s in %s", "Replaced" if existed else "Created", raw_path, self.root)
+        return (
+            f"{'Replaced' if existed else 'Created'} {raw_path} "
+            f"({len(content)} characters, {content.count(chr(10)) + 1} line(s))."
+        )
+
+    def _delete(self, raw_path: str) -> str:
+        if not raw_path:
+            return "[error] 'path' is required"
+
+        path = self._resolve_mutable(raw_path, "delete")
+        if not path.exists():
+            return f"[error] no such file: {raw_path}"
+
+        if path.is_dir():
+            # No recursive delete: wiping a tree is irreversible and too broad a thing to
+            # infer from a task description.
+            if any(path.iterdir()):
+                return (
+                    f"[error] {raw_path} is not empty; delete the files inside it first "
+                    "if you really mean to remove it"
+                )
+            path.rmdir()
+            logger.info("Deleted folder %s in %s", raw_path, self.root)
+            return f"Deleted empty folder {raw_path}."
+
+        path.unlink()
+        logger.info("Deleted %s in %s", raw_path, self.root)
+        return f"Deleted {raw_path}."
 
     async def _run(self, raw_script: str, args: list[str], raw_timeout: Any) -> str:
         if not raw_script:

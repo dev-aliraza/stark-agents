@@ -112,18 +112,18 @@ async def test_include_is_an_allowlist(tmp_path):
     assert names == {"echo"}
 
 
-async def test_registry_merges_mcp_and_workspace_tools(tmp_path):
+async def test_registry_merges_mcp_and_file_tools(tmp_path):
     build_agent(tmp_path)
     registry = await Registry.create(tmp_path)
     try:
         agent = registry.agents[0]
         names = {tool["function"]["name"] for tool in registry.toolbox_for(agent).schemas()}
-        assert {"workspace_list", "workspace_read", "workspace_run"} <= names
+        assert {"file_list", "file_read", "file_run"} <= names
         assert {"echo", "add"} <= names
 
         toolbox = registry.toolbox_for(agent)
         assert "echo: routed" in await toolbox.call("echo", {"text": "routed"})
-        assert "server.py" in await toolbox.call("workspace_list", {})
+        assert "server.py" in await toolbox.call("file_list", {})
     finally:
         await registry.aclose()
 
@@ -155,8 +155,10 @@ Body.
     try:
         agent = registry.agents[0]
         names = {tool["function"]["name"] for tool in registry.toolbox_for(agent).schemas()}
-        # The agent still loads with its workspace tools.
-        assert names == {"workspace_list", "workspace_read", "workspace_run"}
+        # The agent still loads with its file tools.
+        from stark.tools.file import BUILTIN_TOOL_NAMES
+
+        assert names == set(BUILTIN_TOOL_NAMES)
         assert "failed to start" in caplog.text
     finally:
         await registry.aclose()
@@ -182,7 +184,7 @@ async def test_tools_are_callable_from_concurrent_child_tasks(tmp_path):
 
         mixed = await asyncio.gather(
             toolbox.call("add", {"a": 1, "b": 2}),
-            toolbox.call("workspace_list", {}),
+            toolbox.call("file_list", {}),
             toolbox.call("echo", {"text": "mixed"}),
         )
         assert "3" in mixed[0]

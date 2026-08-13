@@ -138,13 +138,13 @@ async def test_tool_step_shows_loading_then_struck_done(instant_flush):
     client = FakeSlackClient()
     sink = sink_for(client, instant_flush)
 
-    await sink.event("tool", "sales-agent → workspace_run", key="c1:t1")
+    await sink.event("tool", "sales-agent → file_run", key="c1:t1")
     await drain()
-    assert client.progress == f"{RUNNING_EMOJI} sales-agent → workspace_run"
+    assert client.progress == f"{RUNNING_EMOJI} sales-agent → file_run"
 
-    await sink.event("tool_end", "sales-agent → workspace_run", key="c1:t1")
+    await sink.event("tool_end", "sales-agent → file_run", key="c1:t1")
     await drain()
-    assert client.progress == f"{DONE_EMOJI} ~sales-agent → workspace_run~"
+    assert client.progress == f"{DONE_EMOJI} ~sales-agent → file_run~"
 
 
 async def test_completion_strikes_the_original_label_not_the_end_detail():
@@ -210,13 +210,13 @@ async def test_tool_steps_nest_under_the_agent_that_ran_them():
     await sink.event("agent_start", "sales-agent: figures", key="c1")
     await sink.event("agent_start", "inventory-agent: stock", key="c2")
     # Tools arrive after both agents started, but must not be listed after both.
-    await sink.event("tool", "sales-agent → workspace_run", key="c1:t1")
+    await sink.event("tool", "sales-agent → file_run", key="c1:t1")
     await sink.event("tool", "inventory-agent → check_stock", key="c2:t2")
     await drain()
 
     assert client.progress.splitlines() == [
         f"{RUNNING_EMOJI} sales-agent: figures",
-        f"        ↳ {RUNNING_EMOJI} sales-agent → workspace_run",
+        f"        ↳ {RUNNING_EMOJI} sales-agent → file_run",
         f"{RUNNING_EMOJI} inventory-agent: stock",
         f"        ↳ {RUNNING_EMOJI} inventory-agent → check_stock",
     ]

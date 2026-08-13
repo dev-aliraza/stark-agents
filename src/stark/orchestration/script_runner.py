@@ -98,7 +98,7 @@ def build_payload(
         "thread": message.thread,
         "meta": message.meta,
         "agent": agent.name,
-        "workspace": str(agent.path),
+        "agent_dir": str(agent.path),
         "invocation": invocation,
         "task": task,
         "context": context,

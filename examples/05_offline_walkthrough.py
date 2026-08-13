@@ -98,7 +98,7 @@ async def fake_model(**kwargs) -> Completion:
         if not results:
             return Completion(
                 tool_calls=[
-                    tool_call("t1", "workspace_run", script="query_sales.py", args=["emea"])
+                    tool_call("t1", "file_run", script="query_sales.py", args=["emea"])
                 ]
             )
         figures = json.loads(_stdout(str(results[-1]["content"])))
@@ -132,7 +132,7 @@ async def fake_model(**kwargs) -> Completion:
 
 
 def _stdout(tool_output: str) -> str:
-    """Pull the stdout section out of a `workspace_run` result."""
+    """Pull the stdout section out of a `file_run` result."""
     marker = "stdout:\n"
     start = tool_output.index(marker) + len(marker)
     return tool_output[start:].split("\n\nstderr:")[0]

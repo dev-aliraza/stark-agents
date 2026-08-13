@@ -235,7 +235,7 @@ async def test_peers_in_the_same_band_do_not_see_each_other(tmp_path):
     assert {item.output for item in results} == {"0"}
 
 
-async def test_payload_carries_the_message_and_workspace(tmp_path):
+async def test_payload_carries_the_message_and_agent_dir(tmp_path):
     write_script_agent(
         tmp_path,
         "probe",
@@ -253,7 +253,7 @@ async def test_payload_carries_the_message_and_workspace(tmp_path):
         await registry.aclose()
 
     keys = results[0].output
-    for expected in ("text", "user", "channel", "thread", "meta", "agent", "workspace",
+    for expected in ("text", "user", "channel", "thread", "meta", "agent", "agent_dir",
                      "prior_outputs"):
         assert f'"{expected}"' in keys
 

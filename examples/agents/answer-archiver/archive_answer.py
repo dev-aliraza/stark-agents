@@ -13,7 +13,7 @@ here:
       "prior_outputs":        [{"agent", "output", "error"}] from everything earlier in
                               this query — the before-phase agents and anything the
                               orchestrator delegated to
-      ...                     text, user, channel, thread, meta, agent, workspace,
+      ...                     text, user, channel, thread, meta, agent, agent_dir,
                               invocation, task, context
     }
 

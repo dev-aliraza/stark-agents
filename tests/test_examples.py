@@ -231,7 +231,7 @@ async def test_inventory_agent_mcp_server_starts_with_the_destructive_tool_filte
 
         assert {"list_skus", "check_stock"} <= names
         assert "purge_warehouse" not in names, "exclude: in AGENT.md must hide it"
-        assert {"workspace_list", "workspace_read", "workspace_run"} <= names
+        assert {"file_list", "file_read", "file_run"} <= names
 
         toolbox = registry.toolbox_for(inventory)
         low_stock = await toolbox.call("check_stock", {"sku": "ATL-LITE-002"})
@@ -241,12 +241,12 @@ async def test_inventory_agent_mcp_server_starts_with_the_destructive_tool_filte
         await registry.aclose()
 
 
-async def test_sales_agent_script_runs_through_its_workspace_tool():
+async def test_sales_agent_script_runs_through_its_file_tool():
     registry = await Registry.create(AGENTS, exclude_agents=["draft-agent"])
     try:
         sales = registry.agent_for("agent__sales-agent")
         output = await registry.toolbox_for(sales).call(
-            "workspace_run", {"script": "query_sales.py", "args": ["emea"]}
+            "file_run", {"script": "query_sales.py", "args": ["emea"]}
         )
         assert "exit code: 0" in output
         assert "4480000" in output.replace(",", "")

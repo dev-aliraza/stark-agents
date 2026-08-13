@@ -7,7 +7,7 @@ from typing import Any, Iterable
 from ..logger import get_logger
 from ..mcp import MCPManager
 from ..parsers import discover_agents
-from ..tools import WorkspaceTools, workspace_schemas
+from ..tools import FileTools, file_schemas
 from ..types import AgentConfig
 from .script_runner import ScriptLoadError, ScriptRunner, load_entry_point
 
@@ -15,21 +15,21 @@ logger = get_logger("registry")
 
 
 class ToolBox:
-    """The tools one agent can call: its workspace plus its MCP servers."""
+    """The tools one agent can call: its own files plus its MCP servers."""
 
-    def __init__(self, workspace: WorkspaceTools, mcp: MCPManager):
-        self.workspace = workspace
+    def __init__(self, files: FileTools, mcp: MCPManager):
+        self.files = files
         self.mcp = mcp
         self._schemas = self._build_schemas()
 
     def _build_schemas(self) -> list[dict[str, Any]]:
-        schemas = list(workspace_schemas())
+        schemas = list(file_schemas())
         builtin = {schema["function"]["name"] for schema in schemas}
         for schema in self.mcp.tools():
             name = schema["function"]["name"]
             if name in builtin:
                 logger.warning(
-                    "Agent '%s': MCP tool '%s' collides with a built-in workspace tool; "
+                    "Agent '%s': MCP tool '%s' collides with a built-in file tool; "
                     "the built-in wins",
                     self.mcp.agent.name,
                     name,
@@ -42,8 +42,8 @@ class ToolBox:
         return self._schemas
 
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        if self.workspace.owns(tool_name):
-            return await self.workspace.call(tool_name, arguments)
+        if self.files.owns(tool_name):
+            return await self.files.call(tool_name, arguments)
         if self.mcp.owns(tool_name):
             return await self.mcp.call(tool_name, arguments)
         return f"[error] unknown tool '{tool_name}'"
@@ -117,7 +117,7 @@ class Registry:
         for agent in self.llm_agents:
             manager = MCPManager(agent)
             await manager.connect(self._stack)
-            self._toolboxes[agent.name] = ToolBox(WorkspaceTools(agent.path), manager)
+            self._toolboxes[agent.name] = ToolBox(FileTools(agent.path), manager)
 
         for agent in self.script_agents:
             try:

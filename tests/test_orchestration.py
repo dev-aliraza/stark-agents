@@ -112,10 +112,13 @@ async def test_registry_exposes_one_tool_per_agent(registry):
     assert "Researches topics." in schema["function"]["description"]
 
 
-async def test_agents_get_the_workspace_toolset(registry):
+async def test_agents_get_the_file_toolset(registry):
+    from stark.tools.file import BUILTIN_TOOL_NAMES
+
     agent = registry.agents[0]
     names = {tool["function"]["name"] for tool in registry.toolbox_for(agent).schemas()}
-    assert names == {"workspace_list", "workspace_read", "workspace_run"}
+    # An agent with no MCP servers gets exactly the built-ins, whatever those are.
+    assert names == set(BUILTIN_TOOL_NAMES)
 
 
 async def test_direct_answer_without_delegation(registry, monkeypatch):
@@ -177,7 +180,7 @@ async def test_agent_receives_its_agent_md_as_system_prompt(registry, monkeypatc
     request = model.calls[0]
     system = request["messages"][0]["content"]
     assert "Do the thing." in system
-    assert "workspace_run" in system
+    assert "file_run" in system
     assert "extra context" in request["messages"][1]["content"]
     # Per-agent limits are honoured, not the orchestrator's.
     assert request["max_output_tokens"] == 4096
@@ -273,7 +276,7 @@ async def test_agent_iteration_limit_is_flagged_to_the_orchestrator(registry, mo
     async def agent_always_calls_a_tool(**kwargs):
         return Completion(
             content="working",
-            tool_calls=[ToolCall(id="t1", name="workspace_list", arguments="{}")],
+            tool_calls=[ToolCall(id="t1", name="file_list", arguments="{}")],
         )
 
     monkeypatch.setattr(

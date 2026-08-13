@@ -46,7 +46,7 @@ examples/agents/
 ├── answer-archiver/      type: script — runs after the orchestrator, on its answer
 │   ├── AGENT.md
 │   └── archive_answer.py
-├── sales-agent/          runs a local script through workspace_run
+├── sales-agent/          runs a local script through file_run
 │   ├── AGENT.md
 │   └── query_sales.py
 ├── inventory-agent/      talks to a real MCP server over stdio
@@ -78,7 +78,7 @@ Between them they cover every discovery rule and both kinds of tool:
 | --- | --- |
 | `ticket-opener` | A `type: script` agent: `triggerPoint: before_orchestrator` plus a `triggerRule` fires `open_ticket.py` with **no model involved**, `priority: 200` puts it ahead of the default band, `send_output: true` posts its result to the user, and `avoid_orchestrator: true` means the marker is the only thing that can open a ticket |
 | `answer-archiver` | `triggerPoint: after_orchestrator` — it runs once the answer is out and receives it as `orchestrator_output`, with `avoid_orchestrator: true` keeping it off the orchestrator's tool list |
-| `sales-agent` | An `AGENT.md` instructing the agent to run its own script; `workspace_run` executes it in a subprocess, sandboxed to the agent's directory |
+| `sales-agent` | An `AGENT.md` instructing the agent to run its own script; `file_run` executes it in a subprocess, sandboxed to the agent's directory |
 | `inventory-agent` | An `mcp:` list with one enabled stdio server and one parked (`enable: false`) HTTP server, `${PYTHON:-python3}` env expansion, and `exclude:` hiding a destructive tool from the model |
 | `writer-agent` | An agent that needs no tools, driven purely by its instructions |
 | `draft-agent` | `exclude_agents` skipping a directory that would otherwise load |

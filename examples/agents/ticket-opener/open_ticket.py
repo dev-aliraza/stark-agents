@@ -14,7 +14,7 @@ so this file imports nothing from stark and can be unit-tested on its own:
       "thread":          thread ts, or None outside Slack
       "meta":            raw listener payload
       "agent":           this agent's name
-      "workspace":       this agent's directory
+      "agent_dir":       this agent's directory
       "prior_outputs":   [{"agent", "output", "error"}] from earlier in this query
       "invocation":      "trigger" (the ===== marker) or "delegation" (the orchestrator)
       "task", "context": what the orchestrator asked for; "" on a triggered run

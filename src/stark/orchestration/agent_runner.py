@@ -27,10 +27,14 @@ class AgentRunner:
     def _system_prompt(self) -> str:
         sections = [self.config.instructions.strip()] if self.config.instructions.strip() else []
         sections.append(
-            "## Your workspace\n"
-            f"Your agent directory is `{self.config.path}`. The `workspace_list`, "
-            "`workspace_read` and `workspace_run` tools operate inside it — use "
-            "`workspace_run` when your instructions tell you to run one of your scripts."
+            "## Your files\n"
+            f"Your agent directory is `{self.config.path}`. The `file_list`, "
+            "`file_read`, `file_write`, `file_delete` and `file_run` "
+            "tools all operate inside it, and nowhere else — use `file_run` when your "
+            "instructions tell you to run one of your scripts.\n"
+            "Writing and deleting change real files. Create a file when you have something "
+            "worth keeping, and only delete something you created or were explicitly told "
+            "to remove."
         )
         sections.append(
             "## Reporting back\n"

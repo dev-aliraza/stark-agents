@@ -22,7 +22,7 @@ agents are relevant — in parallel when the sub-tasks are independent.
 - 🧠 **Model agnostic** — LiteLLM underneath, so any of its 100+ providers works. Anthropic is the first-class default.
 - 🎧 **Pluggable listeners** — an interactive CLI or a Slack Socket Mode bot, same orchestration behind both.
 - ⚡ **Parallel delegation** — independent sub-tasks fan out concurrently; so do the tool calls inside each agent.
-- 🛠️ **Built-in workspace tools** — every agent can list, read, and run the scripts in its own directory, sandboxed to it.
+- 🛠️ **Built-in file tools** — every agent can list, read, write, delete, and run files in its own directory, sandboxed to it.
 - 🧱 **Per-agent budgets** — each agent carries its own model, effort, iteration cap, and token cap.
 
 ## Installation
@@ -285,20 +285,45 @@ loads with whatever remains. A server that fails to *start* is likewise logged a
 > has the server's own dependencies installed. Its working directory is the agent's folder,
 > which is why `args: ["server.py"]` resolves.
 
-## Built-in workspace tools
+## Built-in file tools
 
-Every agent gets three tools scoped to its own directory. Paths are resolved and checked,
-so an agent cannot reach outside its folder.
+Every `llm` agent gets five tools scoped to its own directory. Paths are resolved and
+checked, so an agent cannot reach outside its folder.
 
 | Tool | Purpose |
 | --- | --- |
-| `workspace_list` | List the agent's files, optionally by glob. |
-| `workspace_read` | Read one of its text files. |
-| `workspace_run` | Run one of its scripts and return exit code, stdout, and stderr. |
+| `file_list` | List the agent's files, optionally by glob. |
+| `file_read` | Read one of its text files (truncated at 40,000 chars). |
+| `file_write` | Create a text file, or replace one with `overwrite: true`. |
+| `file_delete` | Delete a file, or an empty folder. |
+| `file_run` | Run one of its scripts and return exit code, stdout, and stderr. |
 
-`workspace_run` executes `.py` files on the current interpreter and any other executable
+`file_run` executes `.py` files on the current interpreter and any other executable
 directly, with a 120s default timeout (900s max). This is what makes
-"run `find_research.py` when asked to research something" work with no glue code.
+"run `find_research.py` when asked to research something" work with no glue code. Together
+with `file_write` it also means an agent can generate a script and then run it.
+
+### Writing and deleting safely
+
+These change real files, so they carry guards a read-only tool doesn't need:
+
+- **No accidental clobbering.** `file_write` refuses to replace an existing file unless
+  `overwrite: true` is passed, and says so — the model has to have decided to replace it.
+- **Refused, not truncated.** Content over 100,000 characters is rejected. Half a file
+  written and reported as success is worse than an error.
+- **No recursive delete.** `file_delete` removes a file, or an empty folder. A folder
+  with anything in it is refused; wiping a tree is too broad a thing to infer from a task.
+- **`AGENT.md` is off limits.** An agent cannot overwrite or delete its own definition —
+  that would change what the agent *is* on the next boot, which is a maintainer's decision.
+- Missing parent folders are created on write, since they can only ever be inside the
+  agent directory.
+
+What the sandbox does and does not bound is worth being precise about: it confines the
+**paths** an agent may name, not the process it starts. A script reached through
+`file_run` is ordinary local code with your user's permissions and could already write
+or delete anything — which is why write and delete are offered on the same footing rather
+than being separately gated. If an agent shouldn't touch files at all, don't give it a
+directory with anything in it.
 
 ## Script agents
 
@@ -333,7 +358,7 @@ nothing from `stark` and can be unit-tested on its own:
 | `text` | the message, mention stripped — always the user's own words |
 | `user`, `channel`, `thread` | listener identifiers (see the table below) |
 | `meta` | the raw listener payload |
-| `agent`, `workspace` | this agent's name and directory |
+| `agent`, `agent_dir` | this agent's name and directory |
 | `prior_outputs` | `[{agent, output, error}]` from everything that already ran this query |
 | `invocation` | `"trigger"` or `"delegation"` — how this run was reached |
 | `task`, `context` | what the orchestrator asked for; empty strings on a triggered run |
@@ -547,7 +572,7 @@ completes — tool calls nested under the agent that ran them:
 
 ```
 :white_check_mark: ~sales-agent: What were EMEA sales in Q2?~
-        ↳ :white_check_mark: ~sales-agent → workspace_run~
+        ↳ :white_check_mark: ~sales-agent → file_run~
 :hourglass: inventory-agent: Is ATL-LITE-002 in stock?
         ↳ :hourglass: inventory-agent → check_stock
 ```
@@ -752,7 +777,7 @@ src/stark/
 ├── llm/                # LiteLLM wrapper: request building, streaming, cost
 ├── orchestration/      # registry, per-agent runner, master loop
 ├── listeners/          # base contracts, cli, slack
-└── tools/              # the built-in workspace toolset
+└── tools/              # the built-in file toolset
 ```
 
 ## Development
@@ -763,7 +788,7 @@ uv sync --extra dev --extra slack
 ```
 
 The suite covers discovery and validation, MCP config parsing, live MCP integration
-against a real stdio server, the workspace sandbox, Slack dispatch, and the full
+against a real stdio server, the file sandbox, Slack dispatch, and the full
 orchestration loop against a stubbed model — no network calls.
 
 ## License

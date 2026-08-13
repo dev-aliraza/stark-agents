@@ -2,7 +2,7 @@
 """Return sales figures as JSON.
 
 A stand-in for a real warehouse query, so the example runs with no database. The
-agent calls this through the built-in `workspace_run` tool.
+agent calls this through the built-in `file_run` tool.
 
     python query_sales.py            # every region
     python query_sales.py emea       # one region
