@@ -27,6 +27,19 @@ _DELEGATION_RULES = """\
 Each agent above is available as a tool. An agent runs in its own context and cannot
 see this conversation, so every task you send must stand on its own.
 
+**These agents are your capabilities, not colleagues you refer the user to.** If an agent
+above can do something, then you can do it — as can any tool of your own listed alongside
+them. There is no inability here to explain, and nothing to apologise for.
+
+- Never describe your own limitations. "I can't browse the web", "I can't click things",
+  "I have no live access" are all wrong when an agent covers the request — you can, through
+  that agent. Say none of it.
+- Never mention the agents, delegation, or how the work was routed. The user asked you and
+  wants the answer; which internal agent produced it is not part of the answer.
+- Do not write a preamble before calling a tool. Announcing what you are about to do, or
+  reasoning aloud about which agent to use, reaches the user as a message. Call the tool.
+- A request that needs current information, a system you cannot reach, or an action taken
+  is simply a tool call. Recognise it as one and make it.
 - When a request splits into independent parts, call several agents in one turn so
   they run in parallel.
 - When one agent's output feeds another, call them in sequence and pass what you
@@ -34,18 +47,51 @@ see this conversation, so every task you send must stand on its own.
 - An agent marked as a deterministic script performs a fixed action rather than
   reasoning about your request. Calling one is an action with real effects, so call it
   only when the user's request needs that action taken.
-- Answer directly when no agent is relevant; do not delegate for its own sake.
-- Once the work is done, reply to the user yourself with the answer — they see your
-  message, not the agents' raw output."""
+- Answer directly when you already know the answer and no agent would add anything; do
+  not delegate for its own sake.
+- Only when no agent covers the request and you cannot answer it yourself: say what is
+  missing and what would be needed. That is the one case where a limit is worth stating,
+  and it is about the request, not about you.
+- Once the work is done, reply with the answer itself — the user sees your message, not
+  the agents' raw output. Cite an external source when there is one (a URL, a document,
+  a figure and where it came from). That is not the same as naming the agent: cite the
+  world, never the plumbing."""
+
+_NO_AGENTS_RULES = """\
+No specialist agents are registered, so answer the user directly. Use your own tools where
+they apply, and say plainly when something is beyond them rather than implying you have
+looked it up."""
+
+_OWN_TOOLS_RULES = """\
+## Your own tools
+
+Alongside the agents, some tools are yours to call directly. Use them for small, immediate
+things — reading a file to answer a question about it, checking one fact.
+
+Prefer an agent for anything substantial. Whatever a tool of yours returns stays in this
+conversation and is sent again on every later turn, where an agent's own work is discarded
+once it reports back. Reading one short file directly is cheaper than a delegation; reading
+six is not.
+
+Say nothing about which of the two you used. It is not part of the answer."""
 
 
 class Orchestrator:
     """The master loop: evaluates a query against the agent roster and delegates."""
 
-    def __init__(self, registry: Registry, instructions: str, model: ModelConfig):
+    def __init__(
+        self,
+        registry: Registry,
+        instructions: str,
+        model: ModelConfig,
+        toolbox: "ToolBox | None" = None,
+    ):
         self.registry = registry
         self.instructions = instructions
         self.model = model
+        # `file` is global, so in practice this is always present when built by the runtime.
+        # It stays optional so embedding code can construct a delegation-only orchestrator.
+        self.toolbox = toolbox
 
     def system_prompt(self) -> str:
         sections = [self.instructions.strip()] if self.instructions.strip() else []
@@ -54,9 +100,9 @@ class Orchestrator:
             sections.append(f"## Available agents\n{self.registry.roster()}")
             sections.append(_DELEGATION_RULES)
         else:
-            sections.append(
-                "No specialist agents are registered, so answer the user directly."
-            )
+            sections.append(_NO_AGENTS_RULES)
+        if self._own_tools():
+            sections.append(_OWN_TOOLS_RULES)
         return "\n\n".join(sections)
 
     @staticmethod
@@ -98,7 +144,7 @@ class Orchestrator:
             {"role": "system", "content": self.system_prompt()},
             {"role": "user", "content": self._user_content(message, result.script_results)},
         ]
-        tools = self.registry.delegation_tools()
+        tools = self.registry.delegation_tools() + self._own_tools()
 
         while result.iterations < self.model.max_iterations:
             result.iterations += 1
@@ -158,6 +204,21 @@ class Orchestrator:
         )
         return result
 
+    def _own_tools(self) -> list[dict[str, Any]]:
+        return self.toolbox.schemas() if self.toolbox else []
+
+    async def _run_own_tool(self, call: ToolCall, sink: ResponseSink) -> str:
+        """Run one of the orchestrator's own tools, reporting it as a step like any other."""
+        label = f"orchestrator → {call.name}"
+        await sink.event("tool", label, key=call.id)
+        try:
+            content = await self.toolbox.call(call.name, call.parsed_arguments())
+        except Exception as exc:
+            logger.error("Orchestrator tool '%s' failed: %s", call.name, exc)
+            content = f"[error] {call.name} failed: {exc}"
+        await sink.event("tool_end", label, key=call.id)
+        return content
+
     async def _delegate(
         self,
         calls: list[ToolCall],
@@ -165,15 +226,26 @@ class Orchestrator:
         result: RunResult,
         sink: ResponseSink,
     ) -> list[dict[str, Any]]:
-        """Fan out every requested agent call in parallel and collect the results."""
+        """Fan out every requested call in parallel and collect the results.
+
+        Two kinds arrive here: a delegation to an agent, and one of the orchestrator's own
+        native tools.
+        """
 
         async def execute(call: ToolCall) -> dict[str, Any]:
+            if self.toolbox is not None and self.toolbox.offers(call.name):
+                return {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": await self._run_own_tool(call, sink),
+                }
+
             if not self.registry.is_agent_tool(call.name):
                 logger.warning("Model requested unknown tool '%s'", call.name)
                 return {
                     "role": "tool",
                     "tool_call_id": call.id,
-                    "content": f"[error] no agent named '{call.name}' is registered",
+                    "content": f"[error] no agent or tool named '{call.name}' is available",
                 }
 
             agent = self.registry.agent_for(call.name)

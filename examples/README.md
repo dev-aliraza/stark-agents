@@ -1,6 +1,6 @@
 # Stark examples
 
-Five runnable programs over one shared set of agents. Start with `05` if you have no API
+Six runnable programs over one shared set of agents. Start with `05` if you have no API
 key yet — it exercises the whole flow for free.
 
 | Example | What it shows | Needs an API key |
@@ -9,6 +9,7 @@ key yet — it exercises the whole flow for free.
 | [`02_custom_instructions.py`](02_custom_instructions.py) | Master system prompt, `exclude_agents`, agent chaining | yes |
 | [`03_slack_bot.py`](03_slack_bot.py) | The same agents served to Slack, with `events` choosing what it answers | yes |
 | [`04_embed_programmatically.py`](04_embed_programmatically.py) | No listener: `Registry` + `Orchestrator` + a custom `ResponseSink` | yes |
+| [`06_web_research.py`](06_web_research.py) | Answering from the live web with `websearch` — search, open, summarise | yes |
 | [`05_offline_walkthrough.py`](05_offline_walkthrough.py) | The full flow with a **fake model** — real scripts, real MCP, no cost | **no** |
 
 ## Run them
@@ -52,6 +53,10 @@ examples/agents/
 ├── inventory-agent/      talks to a real MCP server over stdio
 │   ├── AGENT.md
 │   └── server.py
+├── web-agent/            searches and reads the web with the native websearch tool
+│   └── AGENT.md
+├── ops-agent/            runs allowlisted read-only shell commands
+│   └── AGENT.md
 ├── writer-agent/         the minimum viable agent — AGENT.md and nothing else
 │   └── AGENT.md
 ├── draft-agent/          valid, but skipped via exclude_agents in example 02
@@ -82,6 +87,8 @@ Between them they cover every discovery rule and both kinds of tool:
 | `inventory-agent` | An `mcp:` list with one enabled stdio server and one parked (`enable: false`) HTTP server, `${PYTHON:-python3}` env expansion, and `exclude:` hiding a destructive tool from the model |
 | `writer-agent` | An agent that needs no tools, driven purely by its instructions |
 | `draft-agent` | `exclude_agents` skipping a directory that would otherwise load |
+| `web-agent` | A `tools: websearch:` block — search through an API, then fetch and read a page over HTTP. No browser involved |
+| `ops-agent` | A `tools: shell:` block with an `allow:` list — only those programs run, one plain command per call |
 | `scratch/` | A directory without `AGENT.md` being ignored rather than erroring |
 
 ### MCP config at a glance

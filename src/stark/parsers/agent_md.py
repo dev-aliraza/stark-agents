@@ -10,6 +10,7 @@ from ..errors import AgentValidationError
 from ..logger import get_logger
 from ..triggers import TriggerRuleError
 from ..triggers import parse as parse_trigger_rule
+from ..tools import TOOL_NAMES, spec_for
 from ..types import (
     AGENT_TYPE_LLM,
     AGENT_TYPE_SCRIPT,
@@ -23,6 +24,7 @@ from ..types import (
     TRIGGER_POINTS,
     AgentConfig,
     MCPServerConfig,
+    ToolConfig,
 )
 from . import frontmatter
 
@@ -40,7 +42,15 @@ SCRIPT_REQUIRED_KEYS = COMMON_REQUIRED_KEYS + ("script",)
 REQUIRED_KEYS = LLM_REQUIRED_KEYS
 
 # Keys that only mean something for one type; present on the other, they are ignored.
-LLM_ONLY_KEYS = ("provider", "model", "effort", "max_iterations", "max_output_tokens", "mcp")
+LLM_ONLY_KEYS = (
+    "provider",
+    "model",
+    "effort",
+    "max_iterations",
+    "max_output_tokens",
+    "mcp",
+    "tools",
+)
 SCRIPT_ONLY_KEYS = (
     "script",
     "priority",
@@ -336,6 +346,96 @@ def _parse_mcp(metadata: dict[str, Any], source: Path) -> list[MCPServerConfig]:
     return servers
 
 
+def _parse_tools(metadata: dict[str, Any], source: Path) -> list[ToolConfig]:
+    """Parse the optional `tools:` block — the native capabilities this agent asks for.
+
+    Three shapes are accepted, because `shell:` with nothing after it parses to None and
+    invites people to write a list instead:
+
+        tools: [shell, websearch]
+        tools:
+          shell:
+          websearch: {search_provider: brave}
+
+    Unknown tool names and unknown settings are warned about and dropped rather than fatal:
+    an AGENT.md is authored config, and one bad key should cost you that key, not the agent.
+    """
+    return parse_tools_mapping(metadata.get("tools"), source)
+
+
+def parse_tools_mapping(raw: Any, source: Any) -> list[ToolConfig]:
+    """Parse a `tools:` value from anywhere — an AGENT.md, or `config.orchestrator`."""
+    if raw is None:
+        return []
+
+    if isinstance(raw, (list, tuple, set)):
+        raw = {str(item): None for item in raw}
+    if not isinstance(raw, dict):
+        logger.warning(
+            "%s: 'tools' must be a list of names or a mapping of name to settings; ignoring",
+            source,
+        )
+        return []
+
+    tools: list[ToolConfig] = []
+    for name, value in raw.items():
+        tool = _parse_tool(str(name), value, source)
+        if tool is not None:
+            tools.append(tool)
+    return tools
+
+
+def _parse_tool(name: str, value: Any, source: Path) -> ToolConfig | None:
+    normalized = name.strip().lower()
+    spec = spec_for(normalized)
+    if spec is None:
+        logger.warning(
+            "%s: unknown tool '%s' (expected %s); skipping it",
+            source,
+            name,
+            ", ".join(TOOL_NAMES),
+        )
+        return None
+
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        logger.warning(
+            "%s: tool '%s' settings must be a mapping; using defaults", source, normalized
+        )
+        value = {}
+
+    reserved = {"enable", "include", "exclude"}
+    allowed = set(spec.settings) | reserved
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        logger.warning(
+            "%s: tool '%s' has no setting(s) %s (expected %s); ignoring them",
+            source,
+            normalized,
+            ", ".join(unknown),
+            ", ".join(sorted(allowed)),
+        )
+
+    return ToolConfig(
+        name=normalized,
+        enable=bool(value.get("enable", True)),
+        include=_tool_name_list(value, "include", normalized, source),
+        exclude=_tool_name_list(value, "exclude", normalized, source),
+        settings={key: value[key] for key in spec.settings if key in value},
+    )
+
+
+def _tool_name_list(raw: dict[str, Any], key: str, name: str, source: Path) -> list[str]:
+    value = raw.get(key) or []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        logger.warning("%s: tool '%s' %s must be a list; ignoring", source, name, key)
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def parse_agent_file(agent_file: Path) -> AgentConfig:
     """Load and validate a single AGENT.md file.
 
@@ -412,4 +512,5 @@ def parse_agent_file(agent_file: Path) -> AgentConfig:
         base_url=_optional_str(metadata, "base_url"),
         api_key=_optional_str(metadata, "api_key"),
         mcp=_parse_mcp(metadata, agent_file),
+        tools=_parse_tools(metadata, agent_file),
     )

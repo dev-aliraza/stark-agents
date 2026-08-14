@@ -23,6 +23,7 @@ agents are relevant — in parallel when the sub-tasks are independent.
 - 🎧 **Pluggable listeners** — an interactive CLI or a Slack Socket Mode bot, same orchestration behind both.
 - ⚡ **Parallel delegation** — independent sub-tasks fan out concurrently; so do the tool calls inside each agent.
 - 🛠️ **Built-in file tools** — every agent can list, read, write, delete, and run files in its own directory, sandboxed to it.
+- 🌐 **Native tools** — a `tools:` block gives an agent a shell or web search; `file` is global. In-process, so settings are settings, not environment smuggled through a subprocess.
 - 🧱 **Per-agent budgets** — each agent carries its own model, effort, iteration cap, and token cap.
 
 ## Installation
@@ -31,10 +32,12 @@ agents are relevant — in parallel when the sub-tasks are independent.
 pip install stark-agents
 ```
 
-For the Slack listener:
+For the Slack listener, web search, or a proper CLI prompt:
 
 ```bash
 pip install 'stark-agents[slack]'
+pip install 'stark-agents[websearch]'
+pip install 'stark-agents[cli]'
 ```
 
 Requires Python 3.10+.
@@ -129,7 +132,7 @@ def run(
 | `listener` | `"cli"` for an interactive prompt, `"slack"` for a Socket Mode bot. |
 | `exclude_agents` | Directory names inside `agents` to skip during discovery. |
 | `instructions` | The master system prompt for the orchestration loop. |
-| `config` | Listener settings — which Slack events to answer, and the progress icons. See [Choosing what to listen to](#choosing-what-to-listen-to). |
+| `config` | Listener settings and the orchestrator's own tools. See [Choosing what to listen to](#choosing-what-to-listen-to) and [Tools for the orchestrator](#tools-for-the-orchestrator). |
 
 `run()` blocks until interrupted. To embed it in an existing event loop, use
 `await stark.run_async(...)` — same arguments.
@@ -192,6 +195,7 @@ If a mandatory key is missing, Stark logs a warning and skips that agent. The re
 | `base_url` | `""` | Override the provider endpoint (e.g. a LiteLLM proxy). |
 | `api_key` | `""` | Override the provider key for this agent. |
 | `mcp` | *(none)* | A **list** of MCP servers — see below. |
+| `tools` | *(`file` only)* | Native capabilities: `shell`, `websearch`, and settings for `file`. |
 
 ### Optional — `script` agents
 
@@ -285,10 +289,54 @@ loads with whatever remains. A server that fails to *start* is likewise logged a
 > has the server's own dependencies installed. Its working directory is the agent's folder,
 > which is why `args: ["server.py"]` resolves.
 
-## Built-in file tools
+## Native tools
 
-Every `llm` agent gets five tools scoped to its own directory. Paths are resolved and
-checked, so an agent cannot reach outside its folder.
+`tools:` declares the capabilities Stark ships, running **in-process**. `mcp:` is for
+third-party servers; this is for Stark's own.
+
+```yaml
+tools:
+  file:
+    exclude: [file_delete]          # keep write, drop delete
+  shell:
+    allow: [git, ls, rg]            # only these programs
+    cwd: ${REPO_PATH:-.}
+    timeout: 60
+  websearch:
+    search_provider: brave
+    search_key: ${BRAVE_SEARCH_API_KEY:-}
+    search_key: ${BRAVE_SEARCH_API_KEY:-}
+```
+
+Three shapes are accepted, because `shell:` with nothing after it is easy to mistype:
+
+```yaml
+tools: [shell, websearch]          # nothing to configure
+tools:
+  shell:                         # defaults
+  websearch: {}                  # the same, spelled out
+```
+
+| Key | Applies to | Meaning |
+| --- | --- | --- |
+| `enable` | any tool | `false` parks a configured tool without deleting the block. Defaults true. |
+| `include` | any tool | An allowlist of individual tool names. |
+| `exclude` | any tool | Individual tool names to withhold. |
+
+Settings are relative to the tool — `search_key`, not `websearch_search_key` — and `${VAR}`
+expansion works throughout. An unknown tool or setting is warned about and dropped: an
+AGENT.md is authored config, and one bad key should cost you that key, not the agent.
+
+Because these run in-process, their settings are just settings. There is no `env:` block to
+forward a key through and no interpreter to point at, which are the two ways an MCP-hosted
+tool silently ends up misconfigured.
+
+### `file` is global
+
+Every agent **and the orchestrator** gets `file` without asking, because it is confined to one
+directory — the agent's own folder, and for the orchestrator the agents directory. That
+confinement is what makes it safe to hand out. A `tools: file:` entry only ever configures or
+removes it:
 
 | Tool | Purpose |
 | --- | --- |
@@ -298,32 +346,149 @@ checked, so an agent cannot reach outside its folder.
 | `file_delete` | Delete a file, or an empty folder. |
 | `file_run` | Run one of its scripts and return exit code, stdout, and stderr. |
 
-`file_run` executes `.py` files on the current interpreter and any other executable
-directly, with a 120s default timeout (900s max). This is what makes
-"run `find_research.py` when asked to research something" work with no glue code. Together
-with `file_write` it also means an agent can generate a script and then run it.
+```yaml
+tools:
+  file:
+    exclude: [file_write, file_delete, file_run]   # read-only
+  # or:
+  file:
+    enable: false                                  # no file access at all
+```
 
-### Writing and deleting safely
+`file_run` executes `.py` files on the current interpreter and any other executable directly,
+with a 120s default timeout (900s max). That is what makes "run `find_research.py` when asked
+to research something" work with no glue code — and together with `file_write`, it means an
+agent can generate a script and then run it.
 
-These change real files, so they carry guards a read-only tool doesn't need:
+**Writing and deleting carry guards a read-only tool does not need:**
 
 - **No accidental clobbering.** `file_write` refuses to replace an existing file unless
-  `overwrite: true` is passed, and says so — the model has to have decided to replace it.
-- **Refused, not truncated.** Content over 100,000 characters is rejected. Half a file
-  written and reported as success is worse than an error.
-- **No recursive delete.** `file_delete` removes a file, or an empty folder. A folder
-  with anything in it is refused; wiping a tree is too broad a thing to infer from a task.
-- **`AGENT.md` is off limits.** An agent cannot overwrite or delete its own definition —
-  that would change what the agent *is* on the next boot, which is a maintainer's decision.
-- Missing parent folders are created on write, since they can only ever be inside the
-  agent directory.
+  `overwrite: true` is passed. Without that, an agent that thinks it is creating a fresh file
+  silently destroys one.
+- **Refused, not truncated.** Content over 100,000 characters is rejected. Half a file written
+  and reported as success is worse than an error.
+- **No recursive delete.** A folder with anything in it is refused.
+- **`AGENT.md` is off limits.** An agent cannot rewrite or delete its own definition.
 
-What the sandbox does and does not bound is worth being precise about: it confines the
-**paths** an agent may name, not the process it starts. A script reached through
-`file_run` is ordinary local code with your user's permissions and could already write
-or delete anything — which is why write and delete are offered on the same footing rather
-than being separately gated. If an agent shouldn't touch files at all, don't give it a
-directory with anything in it.
+What the sandbox bounds is worth being precise about: the **paths** an agent may name, not the
+process it starts. A script reached through `file_run` is ordinary local code with your user's
+permissions.
+
+### `shell`
+
+Never handed out by default — declare it, per agent.
+
+| Tool | Purpose |
+| --- | --- |
+| `shell_run` | Run a command; returns exit code, stdout, stderr and duration. |
+| `shell_which` | Check whether a program is installed, and where. |
+| `shell_policy` | Report what this tool will and will not run. |
+
+| Setting | Meaning |
+| --- | --- |
+| `allow` | Programs that may run. Omit for no restriction. |
+| `cwd` | Where commands run, relative to the agent's folder. |
+| `timeout` | Default seconds before a command is killed. |
+
+Commands go through the shell, so pipes, redirection and globs work. They run with **no stdin
+and no terminal**, so anything that would prompt fails immediately instead of hanging — pass
+every answer as a flag.
+
+**Be clear about what this is.** It runs commands as the user the process runs as, with that
+user's permissions. **It is not a sandbox.** What the guards do:
+
+- **Bound the runtime.** 120s default, 900s maximum, and a timeout kills the whole process
+  group — killing only the shell would orphan whatever it started.
+- **Bound the output.** stdout and stderr are truncated at 20,000 characters each.
+- **Catch a few catastrophic mistakes.** `rm -rf /`, `mkfs`, `dd of=/dev/disk2`, a fork bomb,
+  `curl … | sh`, `shutdown`. These catch a model that has misread its instructions — not
+  someone determined to get past them. The list is short on purpose, and `rm -rf ./build`
+  still works.
+
+Two things provide real containment, and both are yours to set. **`allow`** — only these
+programs run, and in that mode shell metacharacters are refused too, because an allowlist that
+checks the first word alone is defeated by `git status; rm -rf ~`. So an allowlist means one
+plain command per call, no pipes. And **not declaring it** for an agent that has no business
+running commands.
+
+### `websearch`
+
+```bash
+pip install 'stark-agents[websearch]'
+```
+
+| Tool | Purpose |
+| --- | --- |
+| `websearch_search` | Search the web; returns title, URL and snippet as data. |
+| `websearch_open` | Fetch a page and return its readable text. |
+
+| Setting | Meaning |
+| --- | --- |
+| `search_provider` | `brave`, `serper` or `duckduckgo`. Defaults to whichever key is set. |
+| `search_key` | The API key for that provider. |
+| `allow_private` | `true` permits localhost and private-network URLs. Off by default. |
+
+**There is no browser in this toolset.** Pages are fetched over HTTP and turned into text by
+a stdlib extractor, so the only dependency is httpx — no browser binary, no driver, nothing
+to install beyond the extra. A page that builds itself with JavaScript comes back with no
+text, and the reply says so instead of pretending.
+
+**Don't transcribe the human's UI steps.** "Open google.com, type in the box, click the first
+result" is how a person does it. `websearch_search` returns URLs, so following a result is
+`websearch_open` — no page layout, no typing, no search box that may have moved. A research
+task is two tool calls:
+
+```
+websearch_search("top 10 destinations in UAE")   → [{title, url, snippet}, ...]
+websearch_open(<the most trustworthy url>)       → readable text
+```
+
+Then the model summarises from text it already has. **Summarising is not a tool** — tools
+fetch, the model reasons. [`examples/agents/web-agent`](examples/agents/web-agent) is exactly
+this, and `examples/06_web_research.py` runs it.
+
+#### Search providers
+
+| Env var | Provider |
+| --- | --- |
+| `BRAVE_SEARCH_API_KEY` | Brave Search API (preferred) |
+| `SERPER_API_KEY` | Serper (Google results) |
+| *(none)* | DuckDuckGo HTML — best-effort, no key |
+| `STARK_SEARCH_PROVIDER` | Force `brave`, `serper` or `duckduckgo` |
+
+`search_provider` and `search_key` override the environment per agent, so two agents can
+search through different providers.
+
+The keyless DuckDuckGo fallback keeps the shipped example runnable with no signup. It parses
+an HTML page and will break when that page changes — it says so rather than reporting nothing
+found. Driving google.com is the least reliable option of all: consent dialogs, bot detection,
+weekly layout changes, and it is against their terms.
+
+#### What it refuses
+
+Non-public addresses — `localhost`, private ranges and `169.254.169.254`, **including after a
+redirect**, since otherwise "fetch this URL" reaches your cloud metadata endpoint. Non-http
+schemes. Oversized and binary responses.
+
+One thing it cannot refuse for you: **page content is untrusted input.** A page can contain
+text aimed at the model. This toolset only reads, which bounds the damage to a bad summary —
+an agent that could also act on a page is a different proposition.
+
+### Tools for the orchestrator
+
+The orchestrator is not an agent and has no `AGENT.md`, so it declares tools through `config`:
+
+```python
+stark.run(config={"orchestrator": {"tools": {"shell": {"allow": ["git"]}}}})
+```
+
+`file` is on for it as for everyone, rooted at the agents directory — the one directory it can
+be said to own. `config={"orchestrator": {"root": "/some/path"}}` moves it.
+
+Weigh this before adding anything verbose. A tool result here lands in the conversation and is
+**re-sent on every later turn**, where an agent's own work is discarded once it reports back.
+Reading one short file directly is cheaper than a delegation; reading six is not. The
+orchestrator's prompt says as much, and tells it to prefer an agent for anything substantial.
 
 ## Script agents
 
@@ -554,6 +719,21 @@ reported even when the query fails, so a slow failure is still visible. Cost and
 counts are omitted when they are zero. This footer is CLI-only — Slack replies are
 unchanged.
 
+#### Pasting a multi-line prompt
+
+With `pip install 'stark-agents[cli]'` a pasted prompt **lands in the buffer**, so you can
+read it, edit it, and press Enter to send. `Alt+Enter` adds a line without sending.
+
+Without that extra it still arrives as one query rather than one query per line, but it sends
+the moment the paste ends — there is no chance to review it. The reason is worth knowing:
+`input()` returns a single line, and a pasted newline is indistinguishable from a typed Enter
+(the terminal even maps a bare carriage return to one). GNU readline 8.1+ solves this with
+bracketed paste, but macOS links Python's `readline` against **libedit**, which has no such
+support. `prompt_toolkit` implements bracketed paste itself, which is why the extra exists.
+
+A pipe is unaffected either way: `echo "..." | stark` keeps one query per line, because a line
+editor cannot edit a pipe.
+
 ### Slack
 
 ```bash
@@ -777,7 +957,7 @@ src/stark/
 ├── llm/                # LiteLLM wrapper: request building, streaming, cost
 ├── orchestration/      # registry, per-agent runner, master loop
 ├── listeners/          # base contracts, cli, slack
-└── tools/              # the built-in file toolset
+└── tools/              # native toolsets: file, shell, websearch, and the catalog
 ```
 
 ## Development

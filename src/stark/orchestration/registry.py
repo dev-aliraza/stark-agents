@@ -7,31 +7,73 @@ from typing import Any, Iterable
 from ..logger import get_logger
 from ..mcp import MCPManager
 from ..parsers import discover_agents
-from ..tools import FileTools, file_schemas
-from ..types import AgentConfig
+from ..tools import ToolFilter, ToolSet, spec_for
+from ..types import AgentConfig, ToolConfig
 from .script_runner import ScriptLoadError, ScriptRunner, load_entry_point
 
 logger = get_logger("registry")
 
 
-class ToolBox:
-    """The tools one agent can call: its own files plus its MCP servers."""
+def build_toolsets(
+    tools: Iterable[ToolConfig], root: Path, owner: str
+) -> list[tuple[ToolSet, ToolFilter]]:
+    """Instantiate one native toolset per `tools:` entry, each with its own filter.
 
-    def __init__(self, files: FileTools, mcp: MCPManager):
-        self.files = files
+    Per-entry instances matter: two agents with a `shell` must not share an allowlist, and a
+    toolset that holds a resource must not hand it to another agent. A toolset whose dependencies are
+    missing is logged and skipped, the same way a failed MCP server is — one unavailable
+    capability should not stop the agent loading.
+    """
+    built: list[tuple[ToolSet, ToolFilter]] = []
+    for tool in tools:
+        spec = spec_for(tool.name)
+        if spec is None:  # pragma: no cover - the parser already filtered these
+            continue
+        try:
+            factory = spec.load()
+        except ImportError as exc:
+            logger.error("%s: tool '%s' is unavailable — %s", owner, tool.name, exc)
+            continue
+        try:
+            instance = factory(root, tool.settings)
+        except Exception as exc:
+            logger.error("%s: tool '%s' could not be built — %s", owner, tool.name, exc)
+            continue
+        built.append((instance, ToolFilter(include=tool.include, exclude=tool.exclude)))
+    return built
+
+
+class ToolBox:
+    """The tools one agent — or the orchestrator — can call.
+
+    Native toolsets first, then MCP servers. Native wins a name collision, because a
+    third-party server should not be able to shadow `file_delete` with something else.
+    """
+
+    def __init__(self, toolsets: list[tuple[ToolSet, ToolFilter]], mcp: MCPManager | None = None):
+        self.toolsets = toolsets
         self.mcp = mcp
+        self.owner = getattr(getattr(mcp, "agent", None), "name", "orchestrator")
         self._schemas = self._build_schemas()
 
     def _build_schemas(self) -> list[dict[str, Any]]:
-        schemas = list(file_schemas())
-        builtin = {schema["function"]["name"] for schema in schemas}
-        for schema in self.mcp.tools():
+        schemas: list[dict[str, Any]] = []
+        native: set[str] = set()
+
+        for toolset, tool_filter in self.toolsets:
+            for schema in tool_filter.apply(toolset.schemas()):
+                name = schema["function"]["name"]
+                if name in native:
+                    continue
+                native.add(name)
+                schemas.append(schema)
+
+        for schema in self.mcp.tools() if self.mcp else []:
             name = schema["function"]["name"]
-            if name in builtin:
+            if name in native:
                 logger.warning(
-                    "Agent '%s': MCP tool '%s' collides with a built-in file tool; "
-                    "the built-in wins",
-                    self.mcp.agent.name,
+                    "%s: MCP tool '%s' collides with a native tool; the native one wins",
+                    self.owner,
                     name,
                 )
                 continue
@@ -41,12 +83,29 @@ class ToolBox:
     def schemas(self) -> list[dict[str, Any]]:
         return self._schemas
 
+    def offers(self, tool_name: str) -> bool:
+        """Whether this toolbox advertises a tool — filtered names are not offered."""
+        return any(schema["function"]["name"] == tool_name for schema in self._schemas)
+
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        if self.files.owns(tool_name):
-            return await self.files.call(tool_name, arguments)
-        if self.mcp.owns(tool_name):
+        if not self.offers(tool_name):
+            # Excluded by config, so refusing here is the point: a model that guessed the
+            # name must not reach past the filter.
+            return f"[error] unknown tool '{tool_name}'"
+        for toolset, _ in self.toolsets:
+            if toolset.owns(tool_name):
+                return await toolset.call(tool_name, arguments)
+        if self.mcp and self.mcp.owns(tool_name):
             return await self.mcp.call(tool_name, arguments)
         return f"[error] unknown tool '{tool_name}'"
+
+    async def aclose(self) -> None:
+        """Release anything a native toolset holds. MCP is closed by the registry's stack."""
+        for toolset, _ in self.toolsets:
+            try:
+                await toolset.aclose()
+            except Exception as exc:  # pragma: no cover - shutdown is best-effort
+                logger.debug("%s: closing a toolset failed: %s", self.owner, exc)
 
 
 class Registry:
@@ -117,7 +176,10 @@ class Registry:
         for agent in self.llm_agents:
             manager = MCPManager(agent)
             await manager.connect(self._stack)
-            self._toolboxes[agent.name] = ToolBox(FileTools(agent.path), manager)
+            self._toolboxes[agent.name] = ToolBox(
+                build_toolsets(agent.enabled_tools, agent.path, f"Agent '{agent.name}'"),
+                manager,
+            )
 
         for agent in self.script_agents:
             try:
@@ -198,7 +260,13 @@ class Registry:
             )
 
     async def aclose(self) -> None:
-        """Shut every MCP server down. Must run in the task that called create()."""
+        """Shut everything down. Must run in the task that called create().
+
+        Native toolsets first, in case one is holding a resource, then the MCP transports,
+        whose contexts have to close in the task that opened them.
+        """
+        for toolbox in self._toolboxes.values():
+            await toolbox.aclose()
         await self._stack.aclose()
 
     @property

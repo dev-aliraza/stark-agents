@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from stark.listeners.cli import CLIListener, CLISink, format_duration
+from stark.listeners.cli import BasicReader, CLIListener, CLISink, format_duration
 from stark.types import AgentResult, RunResult
 
 DURATION = re.compile(r"\d+(?:\.\d+)?\s*(?:ms|s)\b")
@@ -87,7 +87,7 @@ async def test_timing_footer_is_printed_after_the_answer(monkeypatch, capsys):
             agent_results=[AgentResult(agent="sales-agent", task="emea q2")],
         )
 
-    await CLIListener(handler, roster="- sales-agent").start()
+    await CLIListener(handler, roster="- sales-agent", reader=BasicReader()).start()
     out = capsys.readouterr().out
 
     assert "EMEA Q2 was $4.48M." in out
@@ -106,7 +106,7 @@ async def test_timing_is_reported_even_when_the_handler_raises(monkeypatch, caps
     async def handler(message, sink):
         raise RuntimeError("provider exploded")
 
-    await CLIListener(handler).start()
+    await CLIListener(handler, reader=BasicReader()).start()
     out = capsys.readouterr().out
 
     assert "provider exploded" in out
@@ -120,7 +120,7 @@ async def test_zero_cost_run_still_shows_timing(monkeypatch, capsys):
         await sink.final("hi")
         return RunResult(output="hi", iterations=1)
 
-    await CLIListener(handler).start()
+    await CLIListener(handler, reader=BasicReader()).start()
     out = capsys.readouterr().out
 
     assert DURATION.search(out)
@@ -137,7 +137,7 @@ async def test_slash_commands_are_not_timed(monkeypatch, capsys):
         return RunResult()
 
     feed(monkeypatch, "/agents", "", "/exit")
-    await CLIListener(handler, roster="- sales-agent").start()
+    await CLIListener(handler, roster="- sales-agent", reader=BasicReader()).start()
     out = capsys.readouterr().out
 
     assert called is False
@@ -156,7 +156,7 @@ async def test_measured_time_reflects_actual_work(monkeypatch, capsys):
         await sink.final("done")
         return RunResult(output="done", iterations=1)
 
-    await CLIListener(handler).start()
+    await CLIListener(handler, reader=BasicReader()).start()
     out = capsys.readouterr().out
 
     match = DURATION.search(out)
@@ -204,3 +204,249 @@ def test_sink_does_not_time_anything():
     """Timing lives in the listener loop, so the sink stays transport-agnostic."""
     sink = CLISink()
     assert not hasattr(sink, "started_at")
+
+
+# --- reading a multi-line query -----------------------------------------------------------
+
+
+PASTED = """Task: create a copy of the existing tab.
+
+Context: the doc holds weekly updates.
+
+## Steps to perform
+
+- Open the Google Doc.
+- Duplicate the first tab and name it with today's date."""
+
+
+def feeder(*lines: str):
+    """Stand in for input(), and for "is more input already buffered?"
+
+    A paste arrives as one burst, so everything after the first line is pending until the
+    queue runs dry — which is exactly what the real `select` on a tty reports.
+    """
+    queue = list(lines)
+
+    def read(prompt: str = "") -> str:
+        if not queue:
+            raise EOFError
+        return queue.pop(0)
+
+    return read, lambda: bool(queue)
+
+
+def test_a_pasted_block_is_read_as_one_query(monkeypatch):
+    """The bug: line 1 was submitted alone and every later line became its own query."""
+    from stark.listeners.cli import read_query
+
+    read, pending = feeder(*PASTED.splitlines())
+    monkeypatch.setattr("builtins.input", read)
+
+    assert read_query("you > ", more_pending=pending) == PASTED
+
+
+def test_blank_lines_inside_a_pasted_block_survive(monkeypatch):
+    from stark.listeners.cli import read_query
+
+    read, pending = feeder("first", "", "third")
+    monkeypatch.setattr("builtins.input", read)
+
+    assert read_query("you > ", more_pending=pending) == "first\n\nthird"
+
+
+def test_a_single_typed_line_is_returned_immediately(monkeypatch):
+    """Nothing pending, so no waiting and no joining."""
+    from stark.listeners.cli import read_query
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "what is 6*7?")
+
+    assert read_query("you > ", more_pending=lambda: False) == "what is 6*7?"
+
+
+def test_two_separately_typed_lines_stay_separate(monkeypatch):
+    """A human cannot type the next line within the settle window, so nothing is joined."""
+    from stark.listeners.cli import read_query
+
+    read, _ = feeder("first question", "second question")
+    monkeypatch.setattr("builtins.input", read)
+
+    assert read_query("you > ", more_pending=lambda: False) == "first question"
+    assert read_query("you > ", more_pending=lambda: False) == "second question"
+
+
+def test_a_paste_without_a_trailing_newline_still_returns(monkeypatch):
+    """The queue empties mid-read; EOF ends the block rather than losing it."""
+    from stark.listeners.cli import read_query
+
+    queue = ["one", "two"]
+
+    def read(prompt: str = "") -> str:
+        if not queue:
+            raise EOFError
+        return queue.pop(0)
+
+    monkeypatch.setattr("builtins.input", read)
+
+    assert read_query("you > ", more_pending=lambda: True) == "one\ntwo"
+
+
+def test_an_eof_on_the_first_line_propagates(monkeypatch):
+    """Ctrl-D at an empty prompt must still quit, not be swallowed as an empty query."""
+    from stark.listeners.cli import read_query
+
+    def read(prompt: str = ""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", read)
+
+    with pytest.raises(EOFError):
+        read_query("you > ", more_pending=lambda: False)
+
+
+# --- typing a block deliberately ----------------------------------------------------------
+
+
+def test_a_triple_quote_opens_a_block(monkeypatch):
+    from stark.listeners.cli import read_query
+
+    read, _ = feeder('"""', "line one", "line two", '"""')
+    monkeypatch.setattr("builtins.input", read)
+
+    assert read_query("you > ", more_pending=lambda: False) == "line one\nline two"
+
+
+def test_a_block_can_hold_blank_lines_and_slash_words(monkeypatch):
+    """Inside a block nothing is a command — it is all prompt text."""
+    from stark.listeners.cli import read_query
+
+    read, _ = feeder('"""', "- do this", "", "/agents is just text here", '"""')
+    monkeypatch.setattr("builtins.input", read)
+
+    result = read_query("you > ", more_pending=lambda: False)
+    assert result == "- do this\n\n/agents is just text here"
+
+
+def test_ctrl_d_closes_an_unterminated_block(monkeypatch):
+    from stark.listeners.cli import read_query
+
+    read, _ = feeder('"""', "half written")
+    monkeypatch.setattr("builtins.input", read)
+
+    assert read_query("you > ", more_pending=lambda: False) == "half written"
+
+
+# --- the pending check --------------------------------------------------------------------
+
+
+def test_a_pipe_is_never_treated_as_a_paste(monkeypatch):
+    """`echo ... | stark` keeps one query per line, as it always did."""
+    from stark.listeners.cli import stdin_pending
+
+    class NotATty:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr("sys.stdin", NotATty())
+    assert stdin_pending() is False
+
+
+def test_an_unselectable_stdin_is_not_a_paste(monkeypatch):
+    from stark.listeners.cli import stdin_pending
+
+    class Broken:
+        def isatty(self):
+            raise ValueError("closed")
+
+    monkeypatch.setattr("sys.stdin", Broken())
+    assert stdin_pending() is False
+
+
+# --- which reader gets used ----------------------------------------------------------------
+
+
+def test_the_editor_reader_builds_when_prompt_toolkit_is_installed():
+    """prompt_toolkit is what makes a paste wait for Enter."""
+    pytest.importorskip("prompt_toolkit", reason="needs the [cli] extra")
+    from stark.listeners.cli import EditorReader
+
+    assert isinstance(EditorReader.build(), EditorReader)
+
+
+def test_a_terminal_gets_the_editor(monkeypatch):
+    pytest.importorskip("prompt_toolkit", reason="needs the [cli] extra")
+    from stark.listeners.cli import EditorReader, build_reader
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+    assert isinstance(build_reader(), EditorReader)
+
+
+def test_a_pipe_gets_the_plain_reader():
+    """A line editor cannot edit a pipe, and `echo ... | stark` must keep working.
+
+    Under pytest stdin is already not a tty, which is why the whole suite exercises the
+    plain reader and can monkeypatch `input`.
+    """
+    from stark.listeners.cli import BasicReader, build_reader
+
+    assert isinstance(build_reader(), BasicReader)
+
+
+def test_the_basic_reader_is_the_fallback(monkeypatch):
+    """Without prompt_toolkit the CLI still works, it just cannot wait for review."""
+    import builtins
+
+    from stark.listeners.cli import BasicReader, build_reader
+
+    real_import = builtins.__import__
+
+    def no_prompt_toolkit(name, *args, **kwargs):
+        if name.startswith("prompt_toolkit"):
+            raise ImportError("simulated absence")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_prompt_toolkit)
+    assert isinstance(build_reader(), BasicReader)
+
+
+def test_only_the_editor_claims_to_hold_a_paste():
+    """The banner promises different things, so the flag has to be honest."""
+    pytest.importorskip("prompt_toolkit", reason="needs the [cli] extra")
+    from stark.listeners.cli import BasicReader, EditorReader
+
+    assert EditorReader.multiline_paste is True
+    assert BasicReader.multiline_paste is False
+
+
+def test_each_reader_explains_itself_in_the_banner():
+    pytest.importorskip("prompt_toolkit", reason="needs the [cli] extra")
+    from stark.listeners.cli import BasicReader, EditorReader
+
+    assert "press Enter to send" in EditorReader.build().hint()
+    # The fallback says what it cannot do rather than implying the same behaviour.
+    assert "prompt_toolkit" in BasicReader().hint()
+
+
+async def test_the_banner_carries_the_reader_hint():
+    from stark.listeners.cli import BasicReader, CLIListener
+
+    async def handler(message, sink):
+        return RunResult()
+
+    banner = CLIListener(handler, reader=BasicReader())._banner()
+    assert BasicReader().hint() in banner
+
+
+async def test_alt_enter_inserts_a_newline_without_sending():
+    """Typing a block by hand needs a key that is not Enter."""
+    pytest.importorskip("prompt_toolkit", reason="needs the [cli] extra")
+    from stark.listeners.cli import EditorReader
+
+    reader = EditorReader.build()
+    bindings = reader.session.key_bindings.bindings
+    keys = {tuple(str(key) for key in binding.keys) for binding in bindings}
+
+    assert ("Keys.Escape", "Keys.ControlM") in keys or any(
+        "Escape" in " ".join(pair) for pair in keys
+    ), keys

@@ -202,7 +202,7 @@ async def test_unknown_tool_name_is_reported_to_the_model(registry, monkeypatch)
 
     assert result.output == "recovered"
     tool_message = [msg for msg in model.calls[-1]["messages"] if msg["role"] == "tool"][0]
-    assert "no agent named 'agent__ghost'" in tool_message["content"]
+    assert "no agent or tool named 'agent__ghost'" in tool_message["content"]
 
 
 async def test_missing_task_argument_is_reported(registry, monkeypatch):
@@ -298,6 +298,60 @@ async def test_system_prompt_carries_instructions_and_roster(registry):
     assert "agent__research-agent" in prompt
     assert "Researches topics." in prompt
     assert "in parallel" in prompt
+
+
+async def test_the_prompt_frames_agents_as_its_own_capabilities(registry):
+    """"I can't browse the web, but I'll ask web-agent" is the output this exists to stop."""
+    prompt = Orchestrator(registry, "Be helpful.", ModelConfig()).system_prompt()
+
+    assert "your capabilities, not colleagues you refer the user to" in prompt
+    assert "Never describe your own limitations" in prompt
+    assert "Never mention the agents, delegation, or how the work was routed" in prompt
+
+
+async def test_the_prompt_forbids_a_preamble_before_a_tool_call(registry):
+    """Text on a tool-calling turn is streamed, so a preamble reaches the user."""
+    prompt = Orchestrator(registry, "Be helpful.", ModelConfig()).system_prompt()
+
+    assert "Do not write a preamble before calling a tool" in prompt
+
+
+async def test_the_prompt_does_not_invite_narration(registry):
+    """Regression guard: an earlier revision welcomed exactly the sentence we did not want."""
+    prompt = Orchestrator(registry, "Be helpful.", ModelConfig()).system_prompt()
+
+    assert "sentence saying so is welcome" not in prompt
+    assert "I can't look this up myself" not in prompt
+
+
+async def test_the_prompt_still_allows_a_genuine_refusal(registry):
+    """Never refusing at all would push it into inventing answers."""
+    prompt = Orchestrator(registry, "Be helpful.", ModelConfig()).system_prompt()
+
+    assert "Only when no agent covers the request" in prompt
+    assert "what would be needed" in prompt
+
+
+async def test_the_prompt_separates_citing_a_source_from_naming_an_agent(registry):
+    prompt = Orchestrator(registry, "Be helpful.", ModelConfig()).system_prompt()
+
+    assert "cite the" in prompt
+    assert "never the plumbing" in prompt
+
+
+async def test_the_delegation_rules_are_absent_with_no_agents(tmp_path):
+    """Nothing to delegate to, so telling it to delegate would be a trap."""
+    registry = await Registry.create(tmp_path)
+    try:
+        prompt = Orchestrator(registry, "Be helpful.", ModelConfig()).system_prompt()
+    finally:
+        await registry.aclose()
+
+    assert "reason to delegate" not in prompt
+    assert "answer the user directly" in prompt
+    # It must not imply a lookup it cannot perform.
+    assert "rather than implying you have" in prompt
+    assert "looked it up" in prompt
 
 
 async def test_streamed_text_reaches_the_sink(registry, monkeypatch):

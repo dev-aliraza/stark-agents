@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .tools.catalog import ALWAYS_ON
 from .triggers import TriggerRule
 
 # Agent types. `llm` is the default so existing AGENT.md files keep working.
@@ -74,6 +75,34 @@ class MCPServerConfig:
 
 
 @dataclass
+class ToolConfig:
+    """One entry of an agent's `tools:` list — a native capability it asks for.
+
+    Distinct from `MCPServerConfig`: that starts a subprocess and speaks MCP, while this is
+    a toolset Stark implements and runs in-process. `settings` are the tool's own keys,
+    validated against its catalog entry when the AGENT.md is parsed.
+    """
+
+    name: str
+    enable: bool = True
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+    settings: dict[str, Any] = field(default_factory=dict)
+
+
+def with_always_on(tools: list[ToolConfig]) -> list[ToolConfig]:
+    """The toolsets to build, with the always-on ones filled in.
+
+    `file` is handed to every agent and to the orchestrator because it is confined to one
+    directory. A declared entry wins, so `file: {enable: false}` still removes it.
+    """
+    declared = {tool.name: tool for tool in tools}
+    for name in ALWAYS_ON:
+        declared.setdefault(name, ToolConfig(name=name))
+    return [tool for tool in declared.values() if tool.enable]
+
+
+@dataclass
 class AgentConfig:
     """A validated agent loaded from `<agents>/<dir>/AGENT.md`.
 
@@ -101,6 +130,7 @@ class AgentConfig:
     base_url: str = ""
     api_key: str = ""
     mcp: list[MCPServerConfig] = field(default_factory=list)
+    tools: list[ToolConfig] = field(default_factory=list)
 
     # script agents only.
     script: str = ""
@@ -162,6 +192,16 @@ class AgentConfig:
     def enabled_mcp_servers(self) -> list[MCPServerConfig]:
         """The servers to actually start for this agent."""
         return [server for server in self.mcp if server.enable]
+
+    @property
+    def enabled_tools(self) -> list[ToolConfig]:  # noqa: D401 - see with_always_on
+        """The native toolsets to build for this agent, `file` included.
+
+        `file` is always present because it is confined to the agent's own directory, so
+        every agent gets it without asking. A `tools: file:` entry only configures it — or
+        removes it with `enable: false`.
+        """
+        return with_always_on(self.tools)
 
     def triggered_by(self, values: dict[str, str | None]) -> bool:
         """Whether this script agent's automatic run should fire for a message.

@@ -257,13 +257,69 @@ class SlackConfig:
 
 
 @dataclass
+class OrchestratorConfig:
+    """Native tools for the orchestration loop itself.
+
+    The orchestrator is not an agent and has no `AGENT.md`, so this is where it declares
+    tools. `file` is on for it as for everyone, rooted at `root` — which defaults to the
+    agents directory, the one directory the orchestrator can be said to own. `cwd` would be
+    an arbitrary boundary; the agents folder is at least a deliberate one.
+
+        config={"orchestrator": {"tools": {"shell": {"allow": ["git"]}}}}
+
+    Worth weighing before adding anything verbose: a tool result here lands in the
+    conversation and is re-sent on every later turn, where an agent's stays in that agent's
+    own context and is discarded.
+    """
+
+    tools: Any = None
+    root: str = ""
+
+    def __post_init__(self) -> None:
+        if self.tools is None:
+            self.tools = {}
+        if not isinstance(self.tools, (dict, list, tuple)):
+            raise ConfigError(
+                "config.orchestrator.tools must be a list of names or a mapping of name to "
+                f"settings, got {type(self.tools).__name__}"
+            )
+        if not isinstance(self.root, str):
+            raise ConfigError(
+                f"config.orchestrator.root must be a path string, got {self.root!r}"
+            )
+
+    @classmethod
+    def coerce(cls, value: Any) -> "OrchestratorConfig":
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict):
+            raise ConfigError(
+                "config.orchestrator must be a dict or OrchestratorConfig, got "
+                f"{type(value).__name__}"
+            )
+
+        known = {field.name for field in fields(cls)}
+        unknown = sorted(set(value) - known)
+        if unknown:
+            raise ConfigError(
+                f"unknown config.orchestrator key(s) {', '.join(unknown)} — "
+                f"expected {', '.join(sorted(known))}"
+            )
+        return cls(**value)
+
+
+@dataclass
 class Config:
     """Top-level configuration for a Stark process."""
 
     slack: SlackConfig = None  # type: ignore[assignment]
+    orchestrator: OrchestratorConfig = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self.slack = SlackConfig.coerce(self.slack)
+        self.orchestrator = OrchestratorConfig.coerce(self.orchestrator)
 
     @classmethod
     def coerce(cls, value: Any) -> "Config":

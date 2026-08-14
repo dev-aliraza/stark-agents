@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 from .config import Config
 from .listeners import CLI, Message, ResponseSink, build_listener, validate_listener
 from .logger import logger
-from .orchestration import Orchestrator, Registry, ScriptPhase, stop_requested
+from .orchestration import (
+    Orchestrator,
+    Registry,
+    ScriptPhase,
+    ToolBox,
+    build_toolsets,
+    stop_requested,
+)
+from .parsers.agent_md import parse_tools_mapping
 from .types import (
     DEFAULT_EFFORT,
     DEFAULT_INSTRUCTIONS,
@@ -19,6 +28,8 @@ from .types import (
     TRIGGER_POINT_BEFORE,
     ModelConfig,
     RunResult,
+    ToolConfig,
+    with_always_on,
 )
 
 
@@ -59,6 +70,14 @@ def orchestrator_model() -> ModelConfig:
     )
 
 
+def orchestrator_tools(settings) -> list[ToolConfig]:
+    """The native toolsets the orchestration loop itself gets.
+
+    `file` unless switched off, plus anything `config.orchestrator.tools` declares.
+    """
+    return with_always_on(parse_tools_mapping(settings.tools, "config.orchestrator.tools"))
+
+
 async def run_async(
     agents: str = "./agents",
     listener: str = CLI,
@@ -83,7 +102,17 @@ async def run_async(
     after_phase = ScriptPhase(
         registry.script_agents_after, registry.script_runners(), TRIGGER_POINT_AFTER
     )
-    orchestrator = Orchestrator(registry, instructions, model)
+    # The orchestrator is not an agent, so it has no folder of its own. Its file sandbox is
+    # the agents directory — the one directory it can be said to own. `cwd` would be an
+    # accident of where the process was launched.
+    orchestrator_toolbox = ToolBox(
+        build_toolsets(
+            orchestrator_tools(settings.orchestrator),
+            Path(settings.orchestrator.root or agents).expanduser(),
+            "Orchestrator",
+        )
+    )
+    orchestrator = Orchestrator(registry, instructions, model, orchestrator_toolbox)
 
     script_count = before_phase.agent_count + after_phase.agent_count
     if registry.has_llm_agents:

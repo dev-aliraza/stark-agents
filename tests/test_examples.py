@@ -49,6 +49,8 @@ async def test_discovery_matches_the_documented_folder():
         "draft-agent",
         "ticket-opener",
         "answer-archiver",
+        "web-agent",
+        "ops-agent",
     }
 
 
@@ -175,6 +177,98 @@ async def test_the_example_after_orchestrator_agent_stays_quiet_with_no_answer()
     assert result.output == ""
 
 
+async def test_the_example_web_agent_is_wired_as_documented():
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    web = agents["web-agent"]
+
+    assert web.is_llm
+    # A native toolset now, not an MCP subprocess: no command, no interpreter to get wrong.
+    assert web.mcp == []
+    browser = next(tool for tool in web.tools if tool.name == "websearch")
+
+    # Read-only: the agent can search and read, but cannot act on a page.
+    assert browser.exclude == []
+    assert set(browser.settings) <= {"search_provider", "search_key"}
+
+
+async def test_the_example_web_agent_settings_are_plain_config(monkeypatch):
+    """The env: block this needed as a subprocess is gone — settings are just settings."""
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "test-key")
+
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    browser = next(tool for tool in agents["web-agent"].tools if tool.name == "websearch")
+
+    assert browser.settings["search_key"] == "test-key"
+    
+
+async def test_an_unset_search_key_does_not_masquerade_as_configured(monkeypatch):
+    """`${VAR:-}` yields "", which must read as absent rather than as a key."""
+    for name in ("BRAVE_SEARCH_API_KEY", "SERPER_API_KEY", "STARK_SEARCH_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    browser = next(tool for tool in agents["web-agent"].tools if tool.name == "websearch")
+    assert browser.settings["search_key"] == ""
+
+    from stark.tools.websearch import WebSearchTools
+    from stark.tools.websearch.providers import DUCKDUCKGO, choose_provider
+
+    built = WebSearchTools(None, browser.settings)
+    assert choose_provider(built.search_env()) == DUCKDUCKGO
+
+
+async def test_the_example_web_agent_gets_only_the_read_tools():
+    """The `exclude:` list is what makes this agent read-only, so prove it takes effect."""
+    pytest.importorskip("httpx", reason="the websearch tool needs the [websearch] extra")
+
+    registry = await Registry.create(
+        AGENTS,
+        exclude_agents=[
+            "draft-agent", "sales-agent", "inventory-agent", "writer-agent", "ops-agent",
+        ],
+    )
+    try:
+        web = registry.agent_for("agent__web-agent")
+        names = {
+            schema["function"]["name"] for schema in registry.toolbox_for(web).schemas()
+        }
+        assert {"websearch_search", "websearch_open"} <= names
+        # file is global, so it is there without being declared.
+        assert {"file_read", "file_list"} <= names
+    finally:
+        await registry.aclose()
+
+
+async def test_the_example_ops_agent_has_an_allowlisted_shell():
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    shell = next(tool for tool in agents["ops-agent"].tools if tool.name == "shell")
+
+    assert shell.settings["allow"] == ["git", "ls", "cat", "wc", "head", "tail", "find"]
+    assert shell.settings["timeout"] == 30
+
+
+async def test_the_example_ops_agent_actually_refuses_what_is_not_allowed():
+    registry = await Registry.create(
+        AGENTS,
+        exclude_agents=[
+            "draft-agent", "sales-agent", "inventory-agent", "writer-agent", "web-agent",
+        ],
+    )
+    try:
+        ops = registry.agent_for("agent__ops-agent")
+        box = registry.toolbox_for(ops)
+        names = {schema["function"]["name"] for schema in box.schemas()}
+        assert {"shell_run", "shell_which", "shell_policy"} <= names
+
+        allowed = await box.call("shell_run", {"command": "ls"})
+        assert "exit_code" in allowed
+
+        refused = await box.call("shell_run", {"command": "curl https://example.com"})
+        assert "not in the allowed list" in refused
+    finally:
+        await registry.aclose()
+
+
 async def test_exclude_agents_drops_the_draft():
     names = {agent.name for agent in discover_agents(AGENTS, exclude_agents=["draft-agent"])}
     assert names == {
@@ -183,6 +277,8 @@ async def test_exclude_agents_drops_the_draft():
         "writer-agent",
         "ticket-opener",
         "answer-archiver",
+        "web-agent",
+        "ops-agent",
     }
 
 
@@ -221,7 +317,7 @@ async def test_frontmatter_is_wired_as_documented():
 
 
 async def test_inventory_agent_mcp_server_starts_with_the_destructive_tool_filtered():
-    registry = await Registry.create(AGENTS, exclude_agents=["draft-agent"])
+    registry = await Registry.create(AGENTS, exclude_agents=["draft-agent", "web-agent", "ops-agent"])
     try:
         inventory = registry.agent_for("agent__inventory-agent")
         names = {
@@ -242,7 +338,7 @@ async def test_inventory_agent_mcp_server_starts_with_the_destructive_tool_filte
 
 
 async def test_sales_agent_script_runs_through_its_file_tool():
-    registry = await Registry.create(AGENTS, exclude_agents=["draft-agent"])
+    registry = await Registry.create(AGENTS, exclude_agents=["draft-agent", "web-agent", "ops-agent"])
     try:
         sales = registry.agent_for("agent__sales-agent")
         output = await registry.toolbox_for(sales).call(
@@ -284,6 +380,7 @@ def test_query_sales_script_contract():
         "03_slack_bot.py",
         "04_embed_programmatically.py",
         "05_offline_walkthrough.py",
+        "06_web_research.py",
     ],
 )
 def test_example_scripts_compile(script):

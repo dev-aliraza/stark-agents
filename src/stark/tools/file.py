@@ -186,11 +186,22 @@ class FileTools:
     way, since that is the definition of the agent rather than its data.
     """
 
-    def __init__(self, root: Path):
-        self.root = root.resolve()
+    def __init__(self, root: Path | str, settings: dict[str, Any] | None = None):
+        # `settings` is accepted so every native toolset has one constructor shape; `file`
+        # has no settings of its own — narrowing it is `include`/`exclude`, and its root is
+        # the agent's own directory rather than anything configurable, since that root *is*
+        # the sandbox.
+        self.root = Path(root).resolve()
+        self.settings = settings or {}
+
+    def schemas(self) -> list[dict[str, Any]]:
+        return schemas()
 
     def owns(self, tool_name: str) -> bool:
         return tool_name in BUILTIN_TOOL_NAMES
+
+    async def aclose(self) -> None:
+        """Nothing to release: every call is a single filesystem operation."""
 
     def _resolve(self, raw_path: str) -> Path:
         candidate = (self.root / raw_path).resolve() if not Path(raw_path).is_absolute() else Path(raw_path).resolve()
