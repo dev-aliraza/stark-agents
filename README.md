@@ -23,7 +23,7 @@ agents are relevant — in parallel when the sub-tasks are independent.
 - 🎧 **Pluggable listeners** — an interactive CLI or a Slack Socket Mode bot, same orchestration behind both.
 - ⚡ **Parallel delegation** — independent sub-tasks fan out concurrently; so do the tool calls inside each agent.
 - 🛠️ **Built-in file tools** — every agent can list, read, write, delete, and run files in its own directory, sandboxed to it.
-- 🌐 **Native tools** — a `tools:` block gives an agent a shell or web search; `file` is global. In-process, so settings are settings, not environment smuggled through a subprocess.
+- 🌐 **Native tools** — a `tools:` block gives an agent a shell, web search, or the user's own Chrome; `file` is global. In-process, so settings are settings, not environment smuggled through a subprocess.
 - 🧱 **Per-agent budgets** — each agent carries its own model, effort, iteration cap, and token cap.
 
 ## Installation
@@ -100,9 +100,10 @@ stark --agents ./agents --listener cli
 
 ## Examples
 
-[`examples/`](examples/README.md) has five runnable programs over one shared agent folder:
+[`examples/`](examples/README.md) has seven runnable programs over one shared agent folder:
 the quickstart, custom instructions with `exclude_agents`, a Slack bot, direct embedding
-with a custom `ResponseSink`, and an offline walkthrough.
+with a custom `ResponseSink`, web research through `websearch`, browser tasks in your own
+Chrome, and an offline walkthrough.
 
 Start with the offline one — it needs **no API key** and no network, because only the model
 is faked. Real discovery, a real subprocess, and a real MCP server all take part:
@@ -195,7 +196,7 @@ If a mandatory key is missing, Stark logs a warning and skips that agent. The re
 | `base_url` | `""` | Override the provider endpoint (e.g. a LiteLLM proxy). |
 | `api_key` | `""` | Override the provider key for this agent. |
 | `mcp` | *(none)* | A **list** of MCP servers — see below. |
-| `tools` | *(`file` only)* | Native capabilities: `shell`, `websearch`, and settings for `file`. |
+| `tools` | *(`file` only)* | Native capabilities: `shell`, `websearch`, `browser`, and settings for `file`. |
 
 ### Optional — `script` agents
 
@@ -305,7 +306,8 @@ tools:
   websearch:
     search_provider: brave
     search_key: ${BRAVE_SEARCH_API_KEY:-}
-    search_key: ${BRAVE_SEARCH_API_KEY:-}
+  browser:
+    port: 8765                      # where the Chrome extension connects
 ```
 
 Three shapes are accepted, because `shell:` with nothing after it is easy to mistype:
@@ -473,6 +475,92 @@ schemes. Oversized and binary responses.
 One thing it cannot refuse for you: **page content is untrusted input.** A page can contain
 text aimed at the model. This toolset only reads, which bounds the damage to a bad summary —
 an agent that could also act on a page is a different proposition.
+
+### `browser`
+
+Drives **the user's own Chrome**, through the [stark-browser](https://github.com/) extension.
+This is the tool for a page that `websearch` cannot reach: one behind a login, one that builds
+itself with JavaScript, or one that has to be *filled in* rather than read.
+
+| Tool | Purpose |
+| --- | --- |
+| `browser_open` | Open a URL in a new tab and take control of it. Returns the `tabId` everything else needs. |
+| `browser_text` | The rendered page as text — an article, a news story, a document. |
+| `browser_elements` | The fields, buttons and links on the page, each with a `ref`. |
+| `browser_fill` | Type a value into one field, by ref. |
+| `browser_click` | Click one element, by ref. |
+| `browser_press` | Press a key on whatever has focus — `Enter` to submit. |
+| `browser_scroll` | Scroll, for content that loads as you go. |
+| `browser_navigate` | Point an open tab at a different URL. |
+| `browser_tabs` | List the tabs this agent has open. |
+| `browser_close` | Close a tab when finished with it. |
+
+| Setting | Meaning |
+| --- | --- |
+| `port` | Port to listen on. Default `8765`. |
+| `host` | Interface to bind. Default `127.0.0.1`. |
+| `token` | Shared secret; connections without it are rejected. |
+| `timeout` | Seconds to wait for one command. Default 60. |
+| `connect_timeout` | Seconds to wait for a browser to show up at all. Default 20. |
+
+#### The connection runs the other way round
+
+A browser extension's service worker cannot hold a listening socket, so **the extension dials
+out and Stark listens**. Declaring `tools: browser:` opens a local WebSocket server on first
+use — not at boot, so an agent that never browses never opens a port — and the extension's
+popup points at `ws://127.0.0.1:8765`. Two agents that both declare it share one server and
+one browser, which is also what you want: they are driving the same Chrome.
+
+Setup is: load `chrome/` unpacked at `chrome://extensions`, open the popup, Connect. Until
+then every call fails with the same message telling you exactly that.
+
+#### The agent gets its own tabs
+
+`browser_open` is the only way in. The extension takes ownership of the tab it creates, and
+every other command refuses a tab it does not own — so an agent can read and click **only what
+it opened itself**. Your existing tabs are not listed, not readable, and not clickable. That
+boundary is enforced in the extension, not here, which is the right place for it: it holds
+whether the commands come from Stark or from anything else.
+
+Those tabs are collected into a **Stark Agent** tab group, so which tabs are the agent's is
+visible in the tab strip rather than something you take on trust.
+
+The consequence worth planning for: an agent cannot pick up a page you already have open. It
+opens its own tab at that URL — with your cookies, so a login carries over.
+
+#### Refs, not coordinates
+
+Elements are addressed by `ref`, handed out by `browser_elements`:
+
+```
+browser_open("https://example.com/apply")   → { tabId: 42 }
+browser_elements(42)                        → [{ref: "ref_3", role: "input", name: "Full name"}, …]
+browser_fill(42, "ref_3", "Ada Lovelace")
+browser_elements(42)                        → read again; the old refs are gone
+browser_click(42, "ref_9")
+```
+
+**Refs belong to one read.** A click, a navigation, or a fill that changes the page invalidates
+them, so read again rather than reusing. The tool's own reply says so, because a model that
+reuses a stale ref clicks the wrong thing rather than failing.
+
+Coordinates are deliberately not an option. Clicking (x, y) breaks on a different window size,
+a different zoom, or an ad that shifts the layout — and it fails silently, having clicked
+something.
+
+#### What it refuses
+
+`browser_fill` will not type into a password or other credential-shaped field. Those are the
+user's to type. `browser_open` takes http(s) only.
+
+**Page content is untrusted input, and this toolset can act on it.** That is a genuinely
+different proposition from `websearch`, which only reads: a page can contain text aimed at the
+model, and here the model has a click to give it. Weigh that before handing this to an agent
+whose task involves anything consequential — and it is the reason for the ownership boundary,
+which caps the blast radius at the tabs the agent opened.
+
+There is no headless mode and no second browser instance. This is the browser on the user's
+screen; they can watch it work, and take over at any point.
 
 ### Tools for the orchestrator
 
@@ -957,7 +1045,7 @@ src/stark/
 ├── llm/                # LiteLLM wrapper: request building, streaming, cost
 ├── orchestration/      # registry, per-agent runner, master loop
 ├── listeners/          # base contracts, cli, slack
-└── tools/              # native toolsets: file, shell, websearch, and the catalog
+└── tools/              # native toolsets: file, shell, websearch, browser, and the catalog
 ```
 
 ## Development

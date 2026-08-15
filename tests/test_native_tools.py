@@ -45,7 +45,7 @@ def tools_of(root, name: str = "one") -> dict[str, ToolConfig]:
 
 
 def test_the_catalog_covers_the_documented_tools():
-    assert set(TOOL_NAMES) == {"file", "shell", "websearch"}
+    assert set(TOOL_NAMES) == {"file", "shell", "websearch", "browser"}
 
 
 def test_file_is_the_only_always_on_tool():

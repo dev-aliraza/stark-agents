@@ -36,6 +36,7 @@ stark.run(
     # Only the web agent takes part, so the orchestrator has one obvious place to route.
     exclude_agents=[
         "draft-agent",
+        "browser-agent",
         "sales-agent",
         "inventory-agent",
         "writer-agent",

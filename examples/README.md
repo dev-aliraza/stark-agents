@@ -1,6 +1,6 @@
 # Stark examples
 
-Six runnable programs over one shared set of agents. Start with `05` if you have no API
+Seven runnable programs over one shared set of agents. Start with `05` if you have no API
 key yet — it exercises the whole flow for free.
 
 | Example | What it shows | Needs an API key |
@@ -10,6 +10,7 @@ key yet — it exercises the whole flow for free.
 | [`03_slack_bot.py`](03_slack_bot.py) | The same agents served to Slack, with `events` choosing what it answers | yes |
 | [`04_embed_programmatically.py`](04_embed_programmatically.py) | No listener: `Registry` + `Orchestrator` + a custom `ResponseSink` | yes |
 | [`06_web_research.py`](06_web_research.py) | Answering from the live web with `websearch` — search, open, summarise | yes |
+| [`07_browser_tasks.py`](07_browser_tasks.py) | Reading and filling in pages in your own Chrome with `browser` | yes + the extension |
 | [`05_offline_walkthrough.py`](05_offline_walkthrough.py) | The full flow with a **fake model** — real scripts, real MCP, no cost | **no** |
 
 ## Run them
@@ -55,6 +56,8 @@ examples/agents/
 │   └── server.py
 ├── web-agent/            searches and reads the web with the native websearch tool
 │   └── AGENT.md
+├── browser-agent/        reads and fills in pages in your own Chrome, via the browser tool
+│   └── AGENT.md
 ├── ops-agent/            runs allowlisted read-only shell commands
 │   └── AGENT.md
 ├── writer-agent/         the minimum viable agent — AGENT.md and nothing else
@@ -88,6 +91,7 @@ Between them they cover every discovery rule and both kinds of tool:
 | `writer-agent` | An agent that needs no tools, driven purely by its instructions |
 | `draft-agent` | `exclude_agents` skipping a directory that would otherwise load |
 | `web-agent` | A `tools: websearch:` block — search through an API, then fetch and read a page over HTTP. No browser involved |
+| `browser-agent` | A `tools: browser:` block — the user's real Chrome, in a tab it opened itself, for pages that need JavaScript, a login, or typing. Needs the stark-browser extension connected |
 | `ops-agent` | A `tools: shell:` block with an `allow:` list — only those programs run, one plain command per call |
 | `scratch/` | A directory without `AGENT.md` being ignored rather than erroring |
 

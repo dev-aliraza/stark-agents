@@ -50,6 +50,7 @@ async def test_discovery_matches_the_documented_folder():
         "ticket-opener",
         "answer-archiver",
         "web-agent",
+        "browser-agent",
         "ops-agent",
     }
 
@@ -217,6 +218,33 @@ async def test_an_unset_search_key_does_not_masquerade_as_configured(monkeypatch
     assert choose_provider(built.search_env()) == DUCKDUCKGO
 
 
+async def test_the_example_browser_agent_is_wired_as_documented():
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    agent = agents["browser-agent"]
+
+    assert agent.is_llm
+    assert agent.mcp == []
+    browser = next(tool for tool in agent.tools if tool.name == "browser")
+    assert set(browser.settings) <= {"host", "port", "token", "timeout", "connect_timeout"}
+
+
+async def test_the_example_browser_agent_binds_no_port_until_a_tool_is_called():
+    """Declaring the toolset must not open a socket — most runs never browse."""
+    from stark.tools.browser.bridge import _BRIDGES
+
+    registry = await Registry.create(AGENTS, exclude_agents=["draft-agent", "web-agent"])
+    try:
+        agent = registry.agent_for("agent__browser-agent")
+        names = {
+            schema["function"]["name"]
+            for schema in registry.toolbox_for(agent).schemas()
+        }
+        assert "browser_open" in names and "browser_fill" in names
+        assert _BRIDGES == {}
+    finally:
+        await registry.aclose()
+
+
 async def test_the_example_web_agent_gets_only_the_read_tools():
     """The `exclude:` list is what makes this agent read-only, so prove it takes effect."""
     pytest.importorskip("httpx", reason="the websearch tool needs the [websearch] extra")
@@ -278,6 +306,7 @@ async def test_exclude_agents_drops_the_draft():
         "ticket-opener",
         "answer-archiver",
         "web-agent",
+        "browser-agent",
         "ops-agent",
     }
 

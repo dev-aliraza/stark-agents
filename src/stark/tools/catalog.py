@@ -17,6 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 FILE = "file"
 SHELL = "shell"
 WEBSEARCH = "websearch"
+BROWSER = "browser"
 
 
 @runtime_checkable
@@ -96,6 +97,13 @@ CATALOG: dict[str, ToolSpec] = {
         settings=("search_provider", "search_key", "allow_private"),
         extras=("websearch",),
         summary="search the web and read the pages it finds",
+    ),
+    BROWSER: ToolSpec(
+        name=BROWSER,
+        module="stark.tools.browser",
+        factory="BrowserTools",
+        settings=("host", "port", "token", "timeout", "connect_timeout"),
+        summary="drive the user's own Chrome through the stark-browser extension",
     ),
 }
 

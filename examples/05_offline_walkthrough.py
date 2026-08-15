@@ -167,10 +167,12 @@ async def main() -> None:
     # orchestrator and every agent, so this is the only seam needed.
     LLMClient.complete = staticmethod(fake_model)
 
-    # web-agent is excluded so this stays genuinely offline: its MCP server would start
-    # fine with no network, but the point of this example is that nothing reaches out.
+    # The web and browser agents are excluded so this stays genuinely offline: the point
+    # of this example is that nothing reaches out, and browser-agent would also want an
+    # extension connected before it could do anything.
     registry = await Registry.create(
-        "examples/agents", exclude_agents=["draft-agent", "web-agent", "ops-agent"]
+        "examples/agents",
+        exclude_agents=["draft-agent", "web-agent", "browser-agent", "ops-agent"],
     )
     print(f"\nDiscovered {len(registry.agents)} agents:\n{registry.roster()}\n")
 
