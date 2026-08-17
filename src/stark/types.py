@@ -250,6 +250,50 @@ class ToolCall:
 
 
 @dataclass
+class ToolImage:
+    """One image a tool produced, on its way to the model.
+
+    Carried as base64 rather than a URL because the source is a local browser, and a hosted
+    model cannot fetch `localhost`.
+    """
+
+    data: str
+    media_type: str = "image/png"
+    # Shown to the model just before the image. Without it a turn that took two screenshots
+    # is two unlabelled pictures.
+    label: str = ""
+
+    def as_content_block(self) -> dict[str, Any]:
+        """The OpenAI-shaped block LiteLLM translates for every other provider.
+
+        This exact shape is the reason the feature is provider-agnostic: LiteLLM turns it
+        into Anthropic's `image` block, Gemini's `inline_data`, and leaves it alone for
+        OpenAI. Writing any provider's native format here would buy a branch to maintain.
+        """
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{self.media_type};base64,{self.data}"},
+        }
+
+
+@dataclass
+class ToolResult:
+    """What a tool returns when text alone will not do.
+
+    Tools may return a plain `str` — nearly all of them do, and nothing about them changes.
+    This exists for the few that also produce something to look at.
+
+    The images do **not** travel inside the tool result. Anthropic would allow that; OpenAI
+    would not, since its `role: "tool"` content must be a string. So `text` goes back as the
+    tool result and the images follow as a separate user message, which every provider
+    accepts.
+    """
+
+    text: str
+    images: list[ToolImage] = field(default_factory=list)
+
+
+@dataclass
 class Completion:
     """A normalized model response."""
 

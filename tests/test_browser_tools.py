@@ -14,8 +14,14 @@ import socket
 
 import pytest
 
-from stark.tools.browser import BROWSER_TOOL_NAMES, BridgeError, BrowserTools
+from stark.tools.browser import (
+    BROWSER_TOOL_NAMES,
+    VISION_TOOL_NAMES,
+    BridgeError,
+    BrowserTools,
+)
 from stark.tools.browser.bridge import BrowserBridge, acquire, release
+from stark.types import ToolResult
 
 aiohttp = pytest.importorskip("aiohttp", reason="the browser tool needs aiohttp")
 
@@ -252,7 +258,8 @@ def toolset(**settings) -> BrowserTools:
 def test_the_toolset_offers_the_documented_tools():
     names = {schema["function"]["name"] for schema in toolset().schemas()}
 
-    assert names == set(BROWSER_TOOL_NAMES)
+    # The vision three are owned but not offered until asked for, so this is a strict subset.
+    assert names == set(BROWSER_TOOL_NAMES) - set(VISION_TOOL_NAMES)
     assert {"browser_open", "browser_text", "browser_elements", "browser_fill"} <= names
 
 
@@ -457,3 +464,431 @@ def test_the_browser_tool_needs_no_extra():
     from stark.tools import CATALOG
 
     assert CATALOG["browser"].extras == ()
+
+
+# --- vision -------------------------------------------------------------------------------
+
+PIXEL = "iVBORw0KGgoAAAANSUhEUg=="
+
+
+@contextlib.asynccontextmanager
+async def connected(running: BrowserBridge, **settings):
+    """A toolset wired to an already-running bridge.
+
+    `BrowserTools` reaches its bridge through `acquire`, which would otherwise build a second
+    one and fail to bind the port the fixture already holds. Seeding the shared registry is
+    what a real run does anyway — the first toolset to need a port puts it there.
+    """
+    from stark.tools.browser import bridge as bridge_module
+
+    key = (running.host, running.port)
+    bridge_module._BRIDGES[key] = running
+    tools = toolset(port=running.port, **settings)
+    try:
+        yield tools
+    finally:
+        await tools.aclose()
+        bridge_module._BRIDGES.pop(key, None)
+
+
+def test_vision_tools_are_withheld_until_asked_for():
+    """Screenshots are the most expensive thing here, so they are opt-in."""
+    names = {schema["function"]["name"] for schema in toolset().schemas()}
+    assert not (set(VISION_TOOL_NAMES) & names)
+
+
+def test_vision_true_offers_them():
+    names = {schema["function"]["name"] for schema in toolset(vision=True).schemas()}
+    assert set(VISION_TOOL_NAMES) <= names
+
+
+def test_vision_accepts_a_yaml_style_string():
+    """`vision: "true"` from a hand-edited AGENT.md must not read as off."""
+    assert toolset(vision="true").vision is True
+    assert toolset(vision="no").vision is False
+
+
+def test_the_toolset_marks_which_tools_need_a_seeing_model():
+    tools = toolset(vision=True)
+    assert tools.needs_vision("browser_screenshot") is True
+    assert tools.needs_vision("browser_elements") is False
+
+
+async def test_calling_a_vision_tool_with_vision_off_says_how_to_turn_it_on():
+    result = await toolset().call("browser_screenshot", {"tabId": 1})
+    assert "vision: true" in result
+
+
+async def test_a_screenshot_comes_back_as_an_image_the_model_will_see(bridge):
+    reply = {
+        "tabId": 42,
+        "url": "https://example.com",
+        "title": "Example",
+        "image": f"data:image/png;base64,{PIXEL}",
+        "width": 1400,
+        "height": 875,
+    }
+    async with FakeExtension(endpoint(bridge), {"screenshot": reply}):
+        async with connected(bridge, vision=True) as tools:
+            result = await tools.call("browser_screenshot", {"tabId": 42})
+
+    assert isinstance(result, ToolResult)
+    assert len(result.images) == 1
+    image = result.images[0]
+    # The base64 payload only — the data: prefix is rebuilt per provider by LiteLLM.
+    assert image.data == PIXEL
+    assert image.media_type == "image/png"
+    assert "42" in image.label
+
+    # The text half must state the coordinate frame; nothing else tells the model what
+    # numbers browser_click_at will accept.
+    assert '"width": 1400' in result.text and '"height": 875' in result.text
+
+
+async def test_a_screenshot_with_no_image_is_an_error_not_an_empty_picture(bridge):
+    async with FakeExtension(endpoint(bridge), {"screenshot": {"tabId": 42, "image": ""}}):
+        async with connected(bridge, vision=True) as tools:
+            result = await tools.call("browser_screenshot", {"tabId": 42})
+
+    assert isinstance(result, str) and "no image" in result
+
+
+async def test_click_at_requires_coordinates():
+    tools = toolset(vision=True)
+    result = await tools.call("browser_click_at", {"tabId": 1})
+    assert "'x' is required" in result
+
+
+async def test_click_at_rejects_non_numeric_coordinates():
+    tools = toolset(vision=True)
+    assert "must be a number" in await tools.call(
+        "browser_click_at", {"tabId": 1, "x": "left-ish", "y": 10}
+    )
+
+
+async def test_click_at_passes_rounded_pixels_through(bridge):
+    async with FakeExtension(endpoint(bridge), {"click_at": {"clickedAt": {}}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call("browser_click_at", {"tabId": 42, "x": 411.6, "y": 388.2})
+
+    assert extension.received[0]["params"] == {"tabId": 42, "x": 412, "y": 388}
+
+
+async def test_typing_requires_text():
+    assert "'text' is required" in await toolset(vision=True).call("browser_type", {"tabId": 1})
+
+
+async def test_the_extensions_credential_refusal_reaches_the_model(bridge):
+    """The guard lives in the extension; this checks the wording survives the trip."""
+    refusal = (
+        "the focused field looks like a credential field, which this extension will not "
+        "fill. Ask the user to type it."
+    )
+    async with FakeExtension(endpoint(bridge), {"type_text": refusal}):
+        async with connected(bridge, vision=True) as tools:
+            result = await tools.call("browser_type", {"tabId": 42, "text": "hunter2"})
+
+    assert "credential field" in result
+
+
+async def test_opening_a_tab_asks_for_the_debugger_when_eager(bridge):
+    async with FakeExtension(endpoint(bridge), {"tabs.create": {"tabId": 7}}) as extension:
+        async with connected(bridge, vision=True, attach_debugger=True) as tools:
+            await tools.call("browser_open", {"url": "https://example.com"})
+
+    assert extension.received[0]["params"]["debug"] is True
+
+
+async def test_opening_a_tab_does_not_ask_for_it_by_default(bridge):
+    """Lazy is the default: an agent reading the DOM should not raise a debugging bar."""
+    async with FakeExtension(endpoint(bridge), {"tabs.create": {"tabId": 7}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call("browser_open", {"url": "https://example.com"})
+
+    assert "debug" not in extension.received[0]["params"]
+
+
+def test_eager_attachment_without_vision_is_refused_and_explained(caplog):
+    """Nothing would ever use it, so the setting is a mistake worth naming."""
+    with caplog.at_level("WARNING"):
+        tools = toolset(attach_debugger=True)
+
+    assert tools.attach_debugger is False
+    assert "vision: true" in caplog.text
+
+
+async def test_only_browser_open_carries_the_debug_flag(bridge):
+    """It attaches the tab; sending it on every command would be noise."""
+    async with FakeExtension(endpoint(bridge), {"read_page": {}}) as extension:
+        async with connected(bridge, vision=True, attach_debugger=True) as tools:
+            await tools.call("browser_elements", {"tabId": 7})
+
+    assert "debug" not in extension.received[0]["params"]
+
+
+# --- narrating on the page --------------------------------------------------------------
+
+
+async def test_opening_a_tab_turns_on_the_overlay_when_configured(bridge):
+    async with FakeExtension(endpoint(bridge), {"tabs.create": {"tabId": 7}}) as extension:
+        async with connected(bridge, vision=True, show_activity=True) as tools:
+            await tools.call("browser_open", {"url": "https://example.com"})
+
+    assert extension.received[0]["params"]["hud"] is True
+
+
+async def test_the_overlay_follows_the_debugger_by_default():
+    """The eager-debugger mode is the one where somebody is watching the tab."""
+    assert toolset(vision=True, attach_debugger=True).show_activity is True
+    assert toolset(vision=True).show_activity is False
+
+
+async def test_the_overlay_can_be_turned_off_independently():
+    tools = toolset(vision=True, attach_debugger=True, show_activity=False)
+    assert (tools.attach_debugger, tools.show_activity) == (True, False)
+
+
+async def test_the_overlay_is_not_requested_by_default(bridge):
+    async with FakeExtension(endpoint(bridge), {"tabs.create": {"tabId": 7}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call("browser_open", {"url": "https://example.com"})
+
+    assert "hud" not in extension.received[0]["params"]
+
+
+# --- saving screenshots -------------------------------------------------------------------
+
+
+def screenshot_reply(tab_id: int = 42) -> dict:
+    return {
+        "tabId": tab_id,
+        "url": "https://example.com",
+        "image": f"data:image/png;base64,{PIXEL}",
+        "width": 1400,
+        "height": 875,
+    }
+
+
+def test_no_screenshot_path_means_nothing_is_written():
+    assert toolset(vision=True).screenshot_path is None
+
+
+def test_a_relative_path_resolves_under_the_agents_own_directory(tmp_path):
+    tools = BrowserTools(tmp_path, {"vision": True, "screenshot_path": "shots"})
+    assert tools.screenshot_path == tmp_path / "shots"
+
+
+def test_an_absolute_path_is_honoured_as_given(tmp_path):
+    """Authored config, like shell's `cwd` — naming a directory is the operator's call."""
+    tools = BrowserTools(tmp_path, {"vision": True, "screenshot_path": str(tmp_path / "e")})
+    assert tools.screenshot_path == tmp_path / "e"
+
+
+async def test_a_screenshot_is_written_and_the_path_reported(bridge, tmp_path):
+    target = tmp_path / "shots"
+    async with FakeExtension(endpoint(bridge), {"screenshot": screenshot_reply()}):
+        async with connected(bridge, vision=True, screenshot_path=str(target)) as tools:
+            result = await tools.call("browser_screenshot", {"tabId": 42})
+
+    written = list(target.glob("*.png"))
+    assert len(written) == 1
+    # The bytes on disk are the image itself, not the data URL wrapper.
+    import base64
+    assert written[0].read_bytes() == base64.b64decode(PIXEL)
+    # The model is told where it went, so it can refer to the file afterwards.
+    assert str(written[0]) in result.text
+
+
+async def test_the_directory_is_created_if_it_does_not_exist(bridge, tmp_path):
+    target = tmp_path / "deep" / "nested" / "shots"
+    async with FakeExtension(endpoint(bridge), {"screenshot": screenshot_reply()}):
+        async with connected(bridge, vision=True, screenshot_path=str(target)) as tools:
+            await tools.call("browser_screenshot", {"tabId": 42})
+
+    assert len(list(target.glob("*.png"))) == 1
+
+
+async def test_screenshots_in_one_turn_do_not_overwrite_each_other(bridge, tmp_path):
+    """Timestamps are second-resolution, so the counter is what keeps names unique."""
+    target = tmp_path / "shots"
+    async with FakeExtension(endpoint(bridge), {"screenshot": screenshot_reply()}):
+        async with connected(bridge, vision=True, screenshot_path=str(target)) as tools:
+            for _ in range(3):
+                await tools.call("browser_screenshot", {"tabId": 42})
+
+    assert len(list(target.glob("*.png"))) == 3
+
+
+async def test_an_unwritable_path_does_not_fail_the_tool_call(bridge, tmp_path, caplog):
+    """The model still has the image, which is the part it needs."""
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("in the way", encoding="utf-8")
+
+    async with FakeExtension(endpoint(bridge), {"screenshot": screenshot_reply()}):
+        async with connected(bridge, vision=True, screenshot_path=str(blocker)) as tools:
+            with caplog.at_level("WARNING"):
+                result = await tools.call("browser_screenshot", {"tabId": 42})
+
+    assert isinstance(result, ToolResult) and len(result.images) == 1
+    assert "Could not save the screenshot" in caplog.text
+    assert "savedTo" not in result.text
+
+
+async def test_nothing_is_written_when_saving_is_off(bridge, tmp_path):
+    async with FakeExtension(endpoint(bridge), {"screenshot": screenshot_reply()}):
+        async with connected(bridge, vision=True) as tools:
+            result = await tools.call("browser_screenshot", {"tabId": 42})
+
+    assert list(tmp_path.iterdir()) == []
+    assert "savedTo" not in result.text
+
+
+# --- the input primitives a real application needs -----------------------------------------
+
+
+async def test_a_right_click_reaches_the_extension(bridge):
+    """Context menus are how Docs duplicates a tab or inserts a column."""
+    async with FakeExtension(endpoint(bridge), {"click_at": {}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call(
+                "browser_click_at", {"tabId": 1, "x": 10, "y": 20, "button": "right"}
+            )
+
+    assert extension.received[0]["params"]["button"] == "right"
+
+
+async def test_a_left_click_does_not_carry_a_button(bridge):
+    """The default stays the default — no need to spend tokens restating it."""
+    async with FakeExtension(endpoint(bridge), {"click_at": {}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call("browser_click_at", {"tabId": 1, "x": 10, "y": 20})
+
+    assert "button" not in extension.received[0]["params"]
+
+
+async def test_an_unknown_button_is_refused():
+    result = await toolset(vision=True).call(
+        "browser_click_at", {"tabId": 1, "x": 1, "y": 1, "button": "sideways"}
+    )
+    assert "'button' must be" in result
+
+
+async def test_click_counts_are_clamped_to_a_triple_click():
+    from stark.tools.browser.tools import _params
+
+    assert _params("browser_click_at", {"tabId": 1, "x": 1, "y": 1, "clicks": 9})["clicks"] == 3
+
+
+async def test_modifiers_reach_the_extension(bridge):
+    async with FakeExtension(endpoint(bridge), {"key": {}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call(
+                "browser_press", {"tabId": 1, "key": "a", "modifiers": ["ctrl"]}
+            )
+
+    assert extension.received[0]["params"]["modifiers"] == ["ctrl"]
+
+
+async def test_a_single_modifier_string_is_accepted():
+    from stark.tools.browser.tools import _params
+
+    params = _params("browser_press", {"tabId": 1, "key": "End", "modifiers": "ctrl"})
+    assert params["modifiers"] == ["ctrl"]
+
+
+async def test_an_unknown_modifier_is_refused_by_name():
+    result = await toolset(vision=True).call(
+        "browser_press", {"tabId": 1, "key": "a", "modifiers": ["hyper"]}
+    )
+    assert "hyper" in result
+    # The advice points at the platform-independent name, not at ctrl — which is wrong on a Mac.
+    assert "mod" in result and "shift" in result
+
+
+async def test_the_platform_independent_modifier_is_accepted():
+    """`ctrl` is Control on macOS, where the shortcut key is Command.
+
+    The extension resolves `mod` per platform, because it is the only layer that knows the OS.
+    """
+    from stark.tools.browser.tools import _params
+
+    for name in ("mod", "cmdorctrl", "primary"):
+        assert _params("browser_press", {"tabId": 1, "key": "v", "modifiers": [name]})[
+            "modifiers"
+        ] == [name]
+
+
+async def test_mod_reaches_the_extension_unresolved(bridge):
+    """Stark must not guess the platform — the browser is the one that knows."""
+    async with FakeExtension(endpoint(bridge), {"key": {}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call("browser_press", {"tabId": 1, "key": "v", "modifiers": ["mod"]})
+
+    assert extension.received[0]["params"]["modifiers"] == ["mod"]
+
+
+async def test_a_plain_key_press_carries_no_modifiers():
+    from stark.tools.browser.tools import _params
+
+    assert "modifiers" not in _params("browser_press", {"tabId": 1, "key": "Enter"})
+
+
+async def test_dragging_needs_all_four_coordinates():
+    result = await toolset(vision=True).call("browser_drag", {"tabId": 1, "from_x": 5})
+    assert "'from_y' is required" in result
+
+
+async def test_a_drag_reaches_the_extension(bridge):
+    async with FakeExtension(endpoint(bridge), {"drag": {}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call(
+                "browser_drag",
+                {"tabId": 1, "from_x": 5, "from_y": 6, "to_x": 700, "to_y": 80},
+            )
+
+    assert extension.received[0]["params"] == {
+        "tabId": 1, "from_x": 5, "from_y": 6, "to_x": 700, "to_y": 80,
+    }
+
+
+def test_dragging_is_a_vision_tool():
+    """It addresses points on a screenshot, so it is useless without one."""
+    assert "browser_drag" in VISION_TOOL_NAMES
+    assert toolset(vision=True).needs_vision("browser_drag") is True
+    assert "browser_drag" not in {s["function"]["name"] for s in toolset().schemas()}
+
+
+async def test_shift_click_reaches_the_extension(bridge):
+    """The range-selection primitive: click the first cell, shift-click the last, act once."""
+    async with FakeExtension(endpoint(bridge), {"click_at": {}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call(
+                "browser_click_at",
+                {"tabId": 1, "x": 10, "y": 20, "modifiers": ["shift"]},
+            )
+
+    assert extension.received[0]["params"]["modifiers"] == ["shift"]
+
+
+async def test_click_modifiers_are_validated_like_key_modifiers():
+    result = await toolset(vision=True).call(
+        "browser_click_at", {"tabId": 1, "x": 1, "y": 1, "modifiers": ["hyper"]}
+    )
+    assert "hyper" in result and "shift" in result
+
+
+async def test_a_plain_click_carries_no_modifiers():
+    from stark.tools.browser.tools import _params
+
+    assert "modifiers" not in _params("browser_click_at", {"tabId": 1, "x": 1, "y": 1})
+
+
+async def test_click_modifiers_compose_with_button_and_clicks():
+    from stark.tools.browser.tools import _params
+
+    params = _params(
+        "browser_click_at",
+        {"tabId": 1, "x": 1, "y": 1, "button": "right", "clicks": 2, "modifiers": "shift"},
+    )
+    assert params["modifiers"] == ["shift"]
+    assert params["button"] == "right" and params["clicks"] == 2

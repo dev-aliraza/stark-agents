@@ -51,6 +51,7 @@ async def test_discovery_matches_the_documented_folder():
         "answer-archiver",
         "web-agent",
         "browser-agent",
+        "vision-agent",
         "ops-agent",
     }
 
@@ -225,7 +226,10 @@ async def test_the_example_browser_agent_is_wired_as_documented():
     assert agent.is_llm
     assert agent.mcp == []
     browser = next(tool for tool in agent.tools if tool.name == "browser")
-    assert set(browser.settings) <= {"host", "port", "token", "timeout", "connect_timeout"}
+    assert set(browser.settings) <= {
+        "host", "port", "token", "timeout", "connect_timeout", "vision",
+    }
+    assert browser.settings["vision"] is True
 
 
 async def test_the_example_browser_agent_binds_no_port_until_a_tool_is_called():
@@ -307,6 +311,7 @@ async def test_exclude_agents_drops_the_draft():
         "answer-archiver",
         "web-agent",
         "browser-agent",
+        "vision-agent",
         "ops-agent",
     }
 
@@ -447,3 +452,192 @@ def test_offline_walkthrough_runs_with_no_credentials():
     # Both script phases ran, in order, around the orchestrator.
     assert "script agents run  : ticket-opener, answer-archiver" in result.stdout
     assert result.stdout.index("Answer:") < result.stdout.index("Archived as")
+
+
+async def test_the_example_browser_agent_gets_the_vision_tools():
+    """`vision: true` plus a model that can see is what unlocks the three."""
+    registry = await Registry.create(AGENTS, exclude_agents=["draft-agent", "web-agent"])
+    try:
+        toolbox = registry.toolbox_for(registry.agent_for("agent__browser-agent"))
+        names = {schema["function"]["name"] for schema in toolbox.schemas()}
+
+        assert toolbox.vision is True
+        assert {"browser_screenshot", "browser_click_at", "browser_type"} <= names
+    finally:
+        await registry.aclose()
+
+
+async def test_a_text_only_model_loses_the_vision_tools_but_keeps_the_rest(tmp_path):
+    """The end-to-end gate: `supports_vision` says no, so the three are never offered."""
+    directory = tmp_path / "blind-agent"
+    directory.mkdir()
+    (directory / "AGENT.md").write_text(
+        "---\n"
+        "name: blind-agent\n"
+        "description: An agent whose model cannot see.\n"
+        "provider: deepseek\n"
+        "model: deepseek-chat\n"
+        "tools:\n"
+        "  browser:\n"
+        "    vision: true\n"
+        "---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+    registry = await Registry.create(tmp_path)
+    try:
+        toolbox = registry.toolbox_for(registry.agent_for("agent__blind-agent"))
+        names = {schema["function"]["name"] for schema in toolbox.schemas()}
+
+        assert toolbox.vision is False
+        assert not ({"browser_screenshot", "browser_click_at", "browser_type"} & names)
+        # The rest of the browser toolset is unaffected — it never needed to see.
+        assert {"browser_open", "browser_elements", "browser_click"} <= names
+    finally:
+        await registry.aclose()
+
+
+async def test_the_example_vision_agent_attaches_the_debugger_eagerly():
+    """The difference between example 07 and 08: a bar from the first tab, not the first look."""
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    browser = next(t for t in agents["vision-agent"].tools if t.name == "browser")
+
+    assert browser.settings["vision"] is True
+    assert browser.settings["attach_debugger"] is True
+
+    # browser-agent works from page structure, so it must not raise the bar on every tab.
+    other = next(t for t in agents["browser-agent"].tools if t.name == "browser")
+    assert "attach_debugger" not in other.settings
+
+
+async def test_the_example_vision_agent_is_given_only_the_visual_tools():
+    """Its whole premise is the picture.
+
+    Leaving the DOM-reading tools in gives it a second, contradictory way to work, and on a
+    canvas app they return a toolbar and nothing else — which reads as "keep looking" and is
+    how a five-step task becomes thirty.
+    """
+    registry = await Registry.create(AGENTS, exclude_agents=["draft-agent", "web-agent"])
+    try:
+        names = {
+            schema["function"]["name"]
+            for schema in registry.toolbox_for(
+                registry.agent_for("agent__vision-agent")
+            ).schemas()
+        }
+
+        assert {"browser_screenshot", "browser_click_at", "browser_type"} <= names
+        # No second way to work, and no files to wander into.
+        assert not (names & {"browser_text", "browser_elements", "browser_click", "browser_fill"})
+        assert not {name for name in names if name.startswith("file_")}
+    finally:
+        await registry.aclose()
+
+
+async def test_the_example_browser_agent_still_has_both_modes():
+    """The narrowing is vision-agent's specialisation, not a change to the shared toolset."""
+    registry = await Registry.create(AGENTS, exclude_agents=["draft-agent", "web-agent"])
+    try:
+        names = {
+            schema["function"]["name"]
+            for schema in registry.toolbox_for(
+                registry.agent_for("agent__browser-agent")
+            ).schemas()
+        }
+        assert {"browser_elements", "browser_text", "browser_screenshot"} <= names
+    finally:
+        await registry.aclose()
+
+
+async def test_the_example_vision_agent_narrates_and_keeps_its_screenshots():
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    browser = next(t for t in agents["vision-agent"].tools if t.name == "browser")
+
+    assert browser.settings["show_activity"] is True
+    assert browser.settings["screenshot_path"] == "screenshots"
+
+
+async def test_the_example_vision_agent_saves_inside_its_own_folder():
+    """A relative screenshot_path must not escape the agent's directory."""
+    from stark.orchestration import build_toolsets
+
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    agent = agents["vision-agent"]
+    tools = next(
+        instance
+        for instance, _ in build_toolsets(agent.enabled_tools, agent.path, "test")
+        if hasattr(instance, "screenshot_path")
+    )
+
+    # Inside the agent's own directory, not somewhere a relative path could escape to.
+    assert tools.screenshot_path == Path(agent.path) / "screenshots"
+    assert Path(agent.path) in tools.screenshot_path.parents
+
+
+def test_the_visual_example_forbids_reconnaissance_delegations():
+    """The failure that kept looking like a scrolling bug.
+
+    A general-purpose orchestrator handed a complex document task reaches for reconnaissance
+    first — "describe the structure so I understand it, do not change anything yet". No
+    instruction inside vision-agent can override that, because it arrives as the task itself,
+    and the agent spends its whole budget surveying. Guarded here because it recurred across
+    several runs and is invisible in any other test.
+    """
+    source = (EXAMPLES / "08_visual_browsing.py").read_text(encoding="utf-8")
+    instructions = source.split("instructions=(")[1].split("),")[0].lower()
+
+    assert "never delegate a reconnaissance step" in instructions
+    for forbidden in ("describe", "survey", "do not change"):
+        assert forbidden in instructions, f"the brief must rule out '{forbidden}' steps"
+    assert "in the user's own words" in instructions
+
+
+def test_the_vision_agent_bounds_a_reporting_task_to_one_screenshot():
+    """Defence in depth: the agent has to survive being *told* to go and look."""
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    body = agents["vision-agent"].instructions.lower()
+
+    assert "screenshot, then act" in body
+    # It must not simply refuse a reporting task — it answers from one screen and stops.
+    assert "one** screenshot" in body or "one screenshot" in body
+
+
+def test_the_vision_agent_loop_continues_by_scrolling():
+    """A step covering a whole table is not done when the visible rows are done.
+
+    Guarded because I removed this clause once while editing the loop for speed, and the
+    agent then filled the rows on screen and stopped — leaving most of the table untouched
+    with no error to show for it.
+    """
+    agents = {agent.name: agent for agent in discover_agents(AGENTS)}
+    body = agents["vision-agent"].instructions
+
+    assert "Not finished? Scroll" in body
+    assert "atEnd" in body, "the loop needs a completion signal, not a guess"
+
+
+def test_the_vision_agent_bulk_check_never_halts():
+    """The efficiency check must be a thought, not a stop.
+
+    "Three in a row is the limit" with no escape stalled the agent on work that genuinely has
+    no bulk form — it stopped hunting for a shortcut that did not exist.
+    """
+    body = {a.name: a for a in discover_agents(AGENTS)}["vision-agent"].instructions
+    assert "carry on one at a time" in body
+    assert "never stop" in body
+
+
+def test_the_vision_agent_uses_the_portable_shortcut_modifier():
+    """`ctrl+z` is a no-op on macOS, where the shortcut key is Command."""
+    body = {a.name: a for a in discover_agents(AGENTS)}["vision-agent"].instructions
+
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        if "`ctrl+" not in line:
+            continue
+        # Allowed only while explaining *why* ctrl is wrong — and that explanation wraps, so
+        # look at the sentence around it rather than the one line.
+        context = " ".join(lines[max(0, index - 2): index + 3])
+        assert "macOS" in context or "Mac" in context, (
+            f"instruction still tells it to press ctrl: {line}"
+        )

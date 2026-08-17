@@ -172,7 +172,9 @@ async def main() -> None:
     # extension connected before it could do anything.
     registry = await Registry.create(
         "examples/agents",
-        exclude_agents=["draft-agent", "web-agent", "browser-agent", "ops-agent"],
+        exclude_agents=[
+            "draft-agent", "web-agent", "browser-agent", "vision-agent", "ops-agent",
+        ],
     )
     print(f"\nDiscovered {len(registry.agents)} agents:\n{registry.roster()}\n")
 

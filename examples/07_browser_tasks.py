@@ -16,6 +16,7 @@ Then try:
 
     Open https://news.ycombinator.com and tell me the top three stories.
     Open https://httpbin.org/forms/post and fill in the pizza order form.
+    Open https://www.google.com/maps and tell me what you can see.
 
 ## Why this and not `websearch`
 
@@ -49,6 +50,44 @@ Your cookies come with it, so a login carries over.
 Clicking (x, y) breaks on a different window size, a different zoom, or an ad that shifts the
 layout — and it fails by clicking something else, silently. Refs fail loudly instead.
 
+## Vision: looking, not just reading
+
+`browser-agent` has `vision: true`, so it can also take a screenshot and act on what it sees.
+That is the only route into a page with no DOM worth reading — a canvas app like Google Docs
+or Maps, a chart, a widget built from bare divs — and it is how the agent checks what an
+action actually did.
+
+    browser_screenshot(tab)          → an image, sent to the model in the next message
+    browser_click_at(tab, 412, 388)  → a real click, at that point on that image
+    browser_type(tab, "Ada")         → into whatever the click focused
+
+It stays model-agnostic because of *how* the image travels, not because of a branch per
+provider: one OpenAI-shaped `image_url` block that LiteLLM turns into Anthropic's `image`,
+Gemini's `inline_data`, and nothing at all for OpenAI. And because a model that cannot accept
+images is never offered the tools — `litellm.supports_vision` is checked at startup and the
+three are withheld with a warning.
+
+Two costs worth knowing before you turn it on:
+
+- **Chrome shows a debugging bar** on the agent's tab while vision is in use. Screenshots and
+  trusted clicks need the DevTools Protocol; the bar is the browser being honest about that.
+  It is dropped after 90 seconds idle.
+- **A screenshot is ~1,600 tokens, re-sent every turn.** Stark keeps the last two and stubs
+  out the rest, which is roughly a 3x saving over a ten-step task.
+
+Refs still beat pixels for anything `browser_elements` can see: picking from a list cannot
+land on the wrong element, and a coordinate can — silently.
+
+## The debugger only appears when vision is used
+
+`browser-agent` reaches for vision as a fallback, so the debugger attaches the first time
+something actually calls for a screenshot — and on a page `browser_elements` can read, that
+never happens and no debugging bar appears. That is deliberate: an agent working from page
+structure has no business raising it.
+
+If you want the debugger attached to every tab from the moment it opens, that is
+`examples/08_visual_browsing.py` and `vision-agent`, which sets `attach_debugger: true`.
+
 ## Two things it will not do
 
 Type into a password field, and press the button on anything irreversible. The agent fills a
@@ -64,6 +103,7 @@ stark.run(
     # "fetch this page" and "work in this page".
     exclude_agents=[
         "draft-agent",
+        "vision-agent",
         "sales-agent",
         "inventory-agent",
         "writer-agent",

@@ -9,6 +9,7 @@ from ..mcp import MCPManager
 from ..parsers import discover_agents
 from ..tools import ToolFilter, ToolSet, spec_for
 from ..types import AgentConfig, ToolConfig
+from ..vision import model_can_see
 from .script_runner import ScriptLoadError, ScriptRunner, load_entry_point
 
 logger = get_logger("registry")
@@ -50,23 +51,47 @@ class ToolBox:
     third-party server should not be able to shadow `file_delete` with something else.
     """
 
-    def __init__(self, toolsets: list[tuple[ToolSet, ToolFilter]], mcp: MCPManager | None = None):
+    def __init__(
+        self,
+        toolsets: list[tuple[ToolSet, ToolFilter]],
+        mcp: MCPManager | None = None,
+        vision: bool = True,
+    ):
         self.toolsets = toolsets
         self.mcp = mcp
+        self.vision = vision
         self.owner = getattr(getattr(mcp, "agent", None), "name", "orchestrator")
         self._schemas = self._build_schemas()
 
     def _build_schemas(self) -> list[dict[str, Any]]:
         schemas: list[dict[str, Any]] = []
         native: set[str] = set()
+        withheld: list[str] = []
 
         for toolset, tool_filter in self.toolsets:
+            # Missing method means this toolset has nothing image-related, which is true of
+            # everything but `browser`.
+            needs_vision = getattr(toolset, "needs_vision", None)
             for schema in tool_filter.apply(toolset.schemas()):
                 name = schema["function"]["name"]
                 if name in native:
                     continue
+                if not self.vision and needs_vision is not None and needs_vision(name):
+                    # Withheld rather than offered-and-failing: a model that cannot see an
+                    # image has no use for a tool that returns one, and would waste a turn
+                    # discovering that.
+                    withheld.append(name)
+                    continue
                 native.add(name)
                 schemas.append(schema)
+
+        if withheld:
+            logger.warning(
+                "%s: this model cannot accept images, so these tools are not offered to it: "
+                "%s. Give the agent a vision-capable model to use them.",
+                self.owner,
+                ", ".join(withheld),
+            )
 
         for schema in self.mcp.tools() if self.mcp else []:
             name = schema["function"]["name"]
@@ -87,7 +112,8 @@ class ToolBox:
         """Whether this toolbox advertises a tool — filtered names are not offered."""
         return any(schema["function"]["name"] == tool_name for schema in self._schemas)
 
-    async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
+    async def call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        """Run one tool. Returns its text, or a `ToolResult` when it also made images."""
         if not self.offers(tool_name):
             # Excluded by config, so refusing here is the point: a model that guessed the
             # name must not reach past the filter.
@@ -179,6 +205,9 @@ class Registry:
             self._toolboxes[agent.name] = ToolBox(
                 build_toolsets(agent.enabled_tools, agent.path, f"Agent '{agent.name}'"),
                 manager,
+                # Per agent, not per process: agents carry their own models, so one may see
+                # and another may not.
+                vision=model_can_see(agent.provider, agent.model),
             )
 
         for agent in self.script_agents:

@@ -6,8 +6,10 @@ from typing import Any
 from ..listeners.base import ResponseSink
 from ..llm import LLMClient
 from ..logger import get_logger
-from ..types import AgentConfig, AgentResult, ToolCall
+from ..types import AgentConfig, AgentResult, ToolCall, ToolImage
+from ..vision import image_message, prune_images
 from .registry import ToolBox
+from .tool_output import split_result
 
 logger = get_logger("agent")
 
@@ -24,18 +26,44 @@ class AgentRunner:
         self.config = config
         self.toolbox = toolbox
 
+    # The order they read best in, not the order they are defined in.
+    _FILE_TOOLS = ("file_list", "file_read", "file_write", "file_delete", "file_run")
+
+    def _file_section(self) -> str:
+        """Describe the file tools this agent actually has, or say nothing.
+
+        Naming tools an agent cannot call is worse than saying nothing: it spends turns
+        reaching for them, and an agent given a narrow toolset on purpose is precisely the one
+        least able to absorb the distraction. So this follows `enable` and `exclude` rather
+        than assuming the default five.
+        """
+        available = [tool for tool in self._FILE_TOOLS if self.toolbox.offers(tool)]
+        if not available:
+            return ""
+
+        listed = ", ".join(f"`{tool}`" for tool in available)
+        section = (
+            "## Your files\n"
+            f"Your agent directory is `{self.config.path}`. The {listed} "
+            f"{'tools' if len(available) > 1 else 'tool'} operate inside it, and nowhere else"
+        )
+        if "file_run" in available:
+            section += " — use `file_run` when your instructions tell you to run one of your scripts"
+        section += "."
+
+        if {"file_write", "file_delete"} & set(available):
+            section += (
+                "\nWriting and deleting change real files. Create a file when you have "
+                "something worth keeping, and only delete something you created or were "
+                "explicitly told to remove."
+            )
+        return section
+
     def _system_prompt(self) -> str:
         sections = [self.config.instructions.strip()] if self.config.instructions.strip() else []
-        sections.append(
-            "## Your files\n"
-            f"Your agent directory is `{self.config.path}`. The `file_list`, "
-            "`file_read`, `file_write`, `file_delete` and `file_run` "
-            "tools all operate inside it, and nowhere else — use `file_run` when your "
-            "instructions tell you to run one of your scripts.\n"
-            "Writing and deleting change real files. Create a file when you have something "
-            "worth keeping, and only delete something you created or were explicitly told "
-            "to remove."
-        )
+        files = self._file_section()
+        if files:
+            sections.append(files)
         sections.append(
             "## Reporting back\n"
             "You were given one task by an orchestrator. Complete it with the tools "
@@ -97,8 +125,11 @@ class AgentRunner:
                 await sink.event("agent_end", f"{self.config.name} finished", key=key)
                 return result
 
-            responses = await self._run_tools(completion.tool_calls, sink, key)
-            messages.extend(responses)
+            messages.extend(await self._run_tools(completion.tool_calls, sink, key))
+            # Older screenshots become stubs here. Every tool result is re-sent on every
+            # later turn, so without this a ten-step browsing task pays for its first
+            # screenshot ten times over.
+            prune_images(messages)
 
         result.max_iterations_reached = True
         result.output = self._last_text(messages)
@@ -115,23 +146,35 @@ class AgentRunner:
     async def _run_tools(
         self, calls: list[ToolCall], sink: ResponseSink, agent_key: str
     ) -> list[dict[str, Any]]:
-        """Execute every tool the model asked for, concurrently."""
+        """Execute every tool the model asked for, concurrently.
 
-        async def execute(call: ToolCall) -> dict[str, Any]:
+        Returns the tool messages, followed by one user message carrying any images the turn
+        produced. They travel separately because `role: "tool"` content must be a string on
+        OpenAI — see `stark.vision` for why that decides the shape.
+        """
+
+        async def execute(call: ToolCall) -> tuple[dict[str, Any], list[ToolImage]]:
             # Namespaced by the agent so two agents running the same tool concurrently
             # never share a key.
             tool_key = f"{agent_key}:{call.id}"
             label = f"{self.config.name} → {call.name}"
             await sink.event("tool", label, key=tool_key)
             try:
-                content = await self.toolbox.call(call.name, call.parsed_arguments())
+                result = await self.toolbox.call(call.name, call.parsed_arguments())
             except Exception as exc:
                 logger.error("Agent '%s' tool '%s' failed: %s", self.config.name, call.name, exc)
-                content = f"[error] {call.name} failed: {exc}"
+                result = f"[error] {call.name} failed: {exc}"
             await sink.event("tool_end", label, key=tool_key)
-            return {"role": "tool", "tool_call_id": call.id, "content": content}
 
-        return list(await asyncio.gather(*(execute(call) for call in calls)))
+            text, images = split_result(result)
+            return {"role": "tool", "tool_call_id": call.id, "content": text}, images
+
+        outcomes = await asyncio.gather(*(execute(call) for call in calls))
+        messages = [message for message, _ in outcomes]
+        attached = image_message([image for _, images in outcomes for image in images])
+        if attached is not None:
+            messages.append(attached)
+        return messages
 
     @staticmethod
     def _last_text(messages: list[dict[str, Any]]) -> str:

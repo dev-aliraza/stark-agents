@@ -24,6 +24,7 @@ agents are relevant — in parallel when the sub-tasks are independent.
 - ⚡ **Parallel delegation** — independent sub-tasks fan out concurrently; so do the tool calls inside each agent.
 - 🛠️ **Built-in file tools** — every agent can list, read, write, delete, and run files in its own directory, sandboxed to it.
 - 🌐 **Native tools** — a `tools:` block gives an agent a shell, web search, or the user's own Chrome; `file` is global. In-process, so settings are settings, not environment smuggled through a subprocess.
+- 👁️ **Vision, on any provider** — an agent can look at a page, not just read it. Images go out in one format LiteLLM translates for Anthropic, OpenAI and Gemini alike; a model that cannot see is never offered the tools.
 - 🧱 **Per-agent budgets** — each agent carries its own model, effort, iteration cap, and token cap.
 
 ## Installation
@@ -100,10 +101,10 @@ stark --agents ./agents --listener cli
 
 ## Examples
 
-[`examples/`](examples/README.md) has seven runnable programs over one shared agent folder:
+[`examples/`](examples/README.md) has eight runnable programs over one shared agent folder:
 the quickstart, custom instructions with `exclude_agents`, a Slack bot, direct embedding
 with a custom `ResponseSink`, web research through `websearch`, browser tasks in your own
-Chrome, and an offline walkthrough.
+Chrome, browsing by looking at the screen, and an offline walkthrough.
 
 Start with the offline one — it needs **no API key** and no network, because only the model
 is faked. Real discovery, a real subprocess, and a real MCP server all take part:
@@ -494,6 +495,10 @@ itself with JavaScript, or one that has to be *filled in* rather than read.
 | `browser_navigate` | Point an open tab at a different URL. |
 | `browser_tabs` | List the tabs this agent has open. |
 | `browser_close` | Close a tab when finished with it. |
+| `browser_screenshot` | *(vision)* Look at the page. The image is sent to the model. |
+| `browser_click_at` | *(vision)* Click a point on the last screenshot. |
+| `browser_type` | *(vision)* Type into whatever that click focused. |
+| `browser_drag` | *(vision)* Drag between two points on the last screenshot. |
 
 | Setting | Meaning |
 | --- | --- |
@@ -502,6 +507,10 @@ itself with JavaScript, or one that has to be *filled in* rather than read.
 | `token` | Shared secret; connections without it are rejected. |
 | `timeout` | Seconds to wait for one command. Default 60. |
 | `connect_timeout` | Seconds to wait for a browser to show up at all. Default 20. |
+| `vision` | `true` adds the three tools above. Off by default. |
+| `attach_debugger` | `true` attaches Chrome's debugger when a tab opens, not at the first screenshot. Needs `vision`. |
+| `show_activity` | Draw a cursor and a status chip on the page. Defaults to whatever `attach_debugger` is. |
+| `screenshot_path` | Save every screenshot here. Unset means none are written. |
 
 #### The connection runs the other way round
 
@@ -548,9 +557,146 @@ Coordinates are deliberately not an option. Clicking (x, y) breaks on a differen
 a different zoom, or an ad that shifts the layout — and it fails silently, having clicked
 something.
 
+#### Vision
+
+`vision: true` lets the agent *look* at a page rather than only read its structure:
+
+```yaml
+tools:
+  browser:
+    vision: true
+```
+
+```
+browser_screenshot(tab)          → a 1400x875 image, and those are the coordinates
+browser_click_at(tab, 412, 388)  → a real click, at that point on that image
+browser_type(tab, "Ada")         → into whatever the click focused
+```
+
+`browser_click_at` also takes `button: "right"`, `clicks: 2`/`3` and `modifiers: ["shift"]`,
+and `browser_press` takes `modifiers: ["mod"]` — the platform's shortcut key, Command on
+macOS and Control elsewhere, resolved inside the extension because that is the only layer
+that knows the OS. Copy, cut, paste, select-all and undo are additionally issued as real
+editor commands, without which a synthesised paste often reaches nothing. Shift-click is what makes **bulk** operations
+possible — click the first cell of a range, scroll, shift-click the last, press Delete once,
+which is how a person clears fifteen table cells rather than visiting each one. Those are not optional extras: in an application like Google Docs every
+structural operation — duplicate a tab, insert a table column, delete a row — is behind a
+right-click, and the reliable path for the rest is a keyboard shortcut. An agent without them
+can see what it needs to do and have no way to do it, which looks from the outside like it is
+refusing to act.
+
+This is the answer for a page with no DOM worth reading — a canvas app like Google Docs, a
+chart, a custom widget — and for checking what actually happened after an action.
+
+**It is opt-in twice.** The agent asks for it, and its model has to accept images. Stark
+checks the second with `litellm.supports_vision` at startup and simply does not offer the
+three tools to a model that cannot see, with a warning naming them. A model offered
+`browser_click_at` and no way to look at a screenshot would be guessing.
+
+**Prefer refs regardless.** `browser_elements` hands the model a list, and a choice from a
+list cannot land on the wrong element. A coordinate can, and does so silently. The one thing
+`supports_vision` will not tell you is the relevant one here: every vision model can *read* an
+image, but pointing accurately at one is a specialised skill that degrades quietly on smaller
+models. Scoping vision to seeing, and leaving acting to refs, is what keeps this working on
+any model rather than only frontier ones.
+
+**Chrome shows a debugging bar** while vision is in use. Screenshots and real clicks go
+through the DevTools Protocol, which is the only way to address a background tab and the only
+way to produce input a page treats as trusted. The extension attaches only to tabs it owns,
+only when one of these tools is called, and detaches after 90 seconds idle.
+
+That attachment is **lazy by default**, which surprises people: an agent that reads a page
+with `browser_elements` never calls a vision tool, so no bar ever appears. For an agent that
+works by looking, `attach_debugger: true` attaches when the tab opens instead — one visible
+state for the whole session, rather than a bar that materialises halfway through. It needs
+`vision: true` to mean anything, and says so at startup if you set it without.
+
+**Coordinates go stale, and are refused when they have.** The scroll position and viewport
+size travel with each screenshot and are re-checked on every click, so scrolling between
+looking and clicking gets an error rather than a click on something the model never saw. Same
+discipline as ref staleness — and it matters more here, because a stale coordinate still
+points at *something*.
+
+#### Narrowing it down
+
+`exclude:` matters more here than for other toolsets. An agent that works from screenshots and
+also has `browser_text`/`browser_elements` has two contradictory ways to do its job, and on a
+canvas app the DOM tools return a toolbar and nothing else — which reads to a model as "keep
+looking" rather than "there is nothing here". That is how a five-step task becomes thirty.
+
+```yaml
+tools:
+  file:
+    enable: false                 # nothing to wander into
+  browser:
+    vision: true
+    exclude: [browser_text, browser_elements, browser_click, browser_fill]
+```
+
+`examples/agents/vision-agent` is built this way: nine tools, all of which make sense from a
+picture. `examples/agents/browser-agent` keeps all eighteen, because working from structure
+and falling back to sight is a coherent pair. Pick one shape per agent rather than hoping the
+model picks the right mode.
+
+The agent's system prompt follows the toolset, so an agent with `file` disabled is not told it
+has file tools — naming a tool an agent cannot call sends it reaching for one.
+
+#### Watching it work
+
+`show_activity` draws a cursor where the agent is acting and a chip naming what it is doing —
+*Reading what is on the page*, *Clicking (412, 388)*, *Typing…* — directly on the page. A tab
+that scrolls and clicks by itself with no explanation is unsettling to watch, and a click that
+landed on the wrong element looks exactly like one that did nothing at all.
+
+It follows `attach_debugger` by default, since that is the mode where somebody is watching,
+and can be set independently either way. Three properties are worth knowing:
+
+- **It is taken down before every screenshot.** The model gets the page, not Stark's furniture
+  drawn over it — otherwise it spends tokens reasoning about its own cursor, and the chip
+  occludes whatever is behind it.
+- **It cannot fail a command.** The overlay cannot be drawn on a `chrome://` page, a PDF, or a
+  tab mid-navigation, and none of those is a reason for the click that follows to fail.
+- **It cannot swallow a click.** Drawn in a shadow root with `pointer-events: none`, so the
+  page's own CSS cannot restyle it and it can never intercept the agent's own clicks.
+
+#### Keeping the screenshots
+
+`screenshot_path` writes every screenshot to disk as a PNG. Leave it unset and none are kept —
+this is off by default because most runs do not want a directory filling up.
+
+```yaml
+tools:
+  browser:
+    vision: true
+    screenshot_path: screenshots        # under the agent's own folder
+    # screenshot_path: /tmp/stark-shots # or anywhere, if absolute
+```
+
+A relative path resolves against the agent's own directory; an absolute one is used as given.
+That is a wider reach than the `file` tool's sandbox, and deliberately so — it is authored
+config naming a directory, the same trust `shell`'s `cwd` gets.
+
+Files are named `20260816-194412-tab42-001.png`. The counter is what actually keeps them
+unique, since several screenshots in one turn land in the same second; the timestamp is there
+to make the directory readable. The path is reported back in the tool result, so the model can
+refer to the file afterwards.
+
+**A save that fails does not fail the tool call.** The model still has the image, which is the
+part it needs; the warning goes to the log where a person can act on it.
+
+#### What it costs
+
+A screenshot is roughly 1,600 tokens, and every tool result is re-sent on every later turn —
+so ten screenshots in a task is not ten images but fifty-five. Stark keeps the last two and
+replaces older ones with a text stub, which is about a 3x saving on a ten-step task and the
+difference between "usable" and "why was that so expensive". The label stays, so the model can
+still see that a screenshot happened there.
+
 #### What it refuses
 
-`browser_fill` will not type into a password or other credential-shaped field. Those are the
+`browser_fill` will not type into a password or other credential-shaped field. Neither will
+`browser_type`, which is checked against the focused element — otherwise clicking a password
+box and typing would walk straight around the first refusal. Those are the
 user's to type. `browser_open` takes http(s) only.
 
 **Page content is untrusted input, and this toolset can act on it.** That is a genuinely

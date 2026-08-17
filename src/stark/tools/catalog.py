@@ -28,13 +28,22 @@ class ToolSet(Protocol):
     say which names belong to you, and one entry point to run them. `aclose` exists because
     a toolset may hold a resource — a connection, a subprocess — and the registry
     that built it is responsible for shutting it down.
+
+    `call` returns a `str` for almost every tool. A toolset that also produces something to
+    look at may return a `ToolResult` instead, whose images are sent to the model as their
+    own message. Nothing calling a toolset needs to know which it will get.
+
+    One optional hook, not required here because only `browser` implements it:
+    `needs_vision(tool_name) -> bool` marks tools that are pointless without a model that can
+    see. `ToolBox` withholds those from a text-only model, and treats a toolset without the
+    method as having no such tools.
     """
 
     def schemas(self) -> list[dict[str, Any]]: ...
 
     def owns(self, tool_name: str) -> bool: ...
 
-    async def call(self, tool_name: str, arguments: dict[str, Any]) -> str: ...
+    async def call(self, tool_name: str, arguments: dict[str, Any]) -> Any: ...
 
     async def aclose(self) -> None: ...
 
@@ -102,7 +111,10 @@ CATALOG: dict[str, ToolSpec] = {
         name=BROWSER,
         module="stark.tools.browser",
         factory="BrowserTools",
-        settings=("host", "port", "token", "timeout", "connect_timeout"),
+        settings=(
+            "host", "port", "token", "timeout", "connect_timeout",
+            "vision", "attach_debugger", "show_activity", "screenshot_path",
+        ),
         summary="drive the user's own Chrome through the stark-browser extension",
     ),
 }

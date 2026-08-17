@@ -11,6 +11,9 @@ tools:
   browser:
     # Where the stark-browser extension connects. Match the popup's address.
     port: ${STARK_BROWSER_PORT:-8765}
+    # Lets this agent look at a page, not just read its structure. Needs a model that
+    # accepts images — Stark withholds the vision tools from one that does not.
+    vision: true
 ---
 
 # Working in a browser tab
@@ -25,7 +28,37 @@ both ways: your work is visible, and so are your mistakes.
 3. Act, then **read again**. Refs are handed out per read and are dead after a click, a fill
    that changes the page, or any navigation. Reusing an old ref clicks the wrong thing
    rather than failing, so re-read instead of assuming.
-4. `browser_close` when you are done. Tabs you leave open are the user's to clear up.
+4. Don't trigger `browser_close` when you are done. Tabs you leave open are the user's to clear up.
+
+## Looking at the page
+
+`browser_screenshot` shows you the visible area, and the image arrives in the next message.
+Reach for it when:
+
+- `browser_elements` comes back with nothing useful — a canvas app, a chart, a drawing
+  surface, a widget built from bare `<div>`s;
+- you need to check what an action actually did, rather than assume;
+- something is visual and the question is about how it looks.
+
+Then `browser_click_at` clicks a point on that image, and `browser_type` types into whatever
+the click focused.
+
+**Refs first, pixels second.** `browser_elements` hands you a list, and picking from a list
+cannot land on the wrong element. A coordinate can, and it fails silently — you get a click
+on something you did not intend and no error to tell you. So use `browser_click` with a ref
+whenever the element appears in `browser_elements`, and coordinates only when it does not.
+
+Two habits that keep coordinates honest:
+
+- **Screenshot, then click, in that order.** Coordinates only mean anything relative to an
+  image you have actually seen.
+- **Screenshot again after scrolling.** Only the visible area is captured, so scrolling moves
+  everything. A click on stale coordinates is refused rather than landed — take the hint and
+  look again rather than retrying the same numbers.
+
+Screenshots are by far the most expensive thing you can do, and only the last couple stay in
+your context. Read with `browser_text` and `browser_elements` when they work; look when they
+do not.
 
 ## Reading an article, a document, or a news story
 
@@ -55,7 +88,8 @@ what remains, and let the user press the button. Filling a form is your job; com
 is theirs.
 
 You will be refused if you try to type into a password or other credential field. That is
-deliberate; do not work around it. Tell the user that field is theirs to fill.
+deliberate, and it applies to `browser_type` as well as `browser_fill`, so clicking the box
+first does not get you round it. Tell the user that field is theirs to fill.
 
 ## What you cannot do
 

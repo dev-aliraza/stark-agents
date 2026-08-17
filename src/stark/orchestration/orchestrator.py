@@ -13,11 +13,14 @@ from ..types import (
     RunResult,
     ScriptResult,
     ToolCall,
+    ToolImage,
 )
+from ..vision import image_message, prune_images
 from .agent_runner import AgentRunner
 from .registry import Registry
 from .script_phase import stop_requested
 from .script_runner import build_payload
+from .tool_output import split_result
 
 logger = get_logger("orchestrator")
 
@@ -180,6 +183,7 @@ class Orchestrator:
             already = len(result.script_results)
             responses = await self._delegate(completion.tool_calls, message, result, sink)
             messages.extend(responses)
+            prune_images(messages)
 
             # A delegated script agent can halt the run. The tool results from this turn are
             # discarded rather than sent back for another turn — "stop" has to mean the model
@@ -207,17 +211,19 @@ class Orchestrator:
     def _own_tools(self) -> list[dict[str, Any]]:
         return self.toolbox.schemas() if self.toolbox else []
 
-    async def _run_own_tool(self, call: ToolCall, sink: ResponseSink) -> str:
+    async def _run_own_tool(
+        self, call: ToolCall, sink: ResponseSink
+    ) -> tuple[str, list[ToolImage]]:
         """Run one of the orchestrator's own tools, reporting it as a step like any other."""
         label = f"orchestrator → {call.name}"
         await sink.event("tool", label, key=call.id)
         try:
-            content = await self.toolbox.call(call.name, call.parsed_arguments())
+            result = await self.toolbox.call(call.name, call.parsed_arguments())
         except Exception as exc:
             logger.error("Orchestrator tool '%s' failed: %s", call.name, exc)
-            content = f"[error] {call.name} failed: {exc}"
+            result = f"[error] {call.name} failed: {exc}"
         await sink.event("tool_end", label, key=call.id)
-        return content
+        return split_result(result)
 
     async def _delegate(
         self,
@@ -232,21 +238,20 @@ class Orchestrator:
         native tools.
         """
 
-        async def execute(call: ToolCall) -> dict[str, Any]:
+        async def execute(call: ToolCall) -> tuple[dict[str, Any], list[ToolImage]]:
+            def answer(content: str, images: list[ToolImage] | None = None):
+                return (
+                    {"role": "tool", "tool_call_id": call.id, "content": content},
+                    images or [],
+                )
+
             if self.toolbox is not None and self.toolbox.offers(call.name):
-                return {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": await self._run_own_tool(call, sink),
-                }
+                content, images = await self._run_own_tool(call, sink)
+                return answer(content, images)
 
             if not self.registry.is_agent_tool(call.name):
                 logger.warning("Model requested unknown tool '%s'", call.name)
-                return {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": f"[error] no agent or tool named '{call.name}' is available",
-                }
+                return answer(f"[error] no agent or tool named '{call.name}' is available")
 
             agent = self.registry.agent_for(call.name)
             arguments = call.parsed_arguments()
@@ -254,32 +259,30 @@ class Orchestrator:
             context = str(arguments.get("context") or "")
 
             if not task:
-                return {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": "[error] 'task' is required; describe what this agent should do",
-                }
+                return answer("[error] 'task' is required; describe what this agent should do")
 
             # The tool-call id is unique per turn, so it keys this delegation's progress
             # even when the same agent is called twice at once.
             if agent.is_script:
-                content = await self._delegate_to_script(
-                    agent, task, context, message, result, sink, key=call.id
+                return answer(
+                    await self._delegate_to_script(
+                        agent, task, context, message, result, sink, key=call.id
+                    )
                 )
-                return {"role": "tool", "tool_call_id": call.id, "content": content}
 
             runner = AgentRunner(agent, self.registry.toolbox_for(agent))
             agent_result = await runner.run(task, context, sink, key=call.id)
             result.agent_results.append(agent_result)
             result.cost += agent_result.cost
 
-            return {
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": agent_result.as_tool_content(),
-            }
+            return answer(agent_result.as_tool_content())
 
-        return list(await asyncio.gather(*(execute(call) for call in calls)))
+        outcomes = await asyncio.gather(*(execute(call) for call in calls))
+        messages = [reply for reply, _ in outcomes]
+        attached = image_message([image for _, images in outcomes for image in images])
+        if attached is not None:
+            messages.append(attached)
+        return messages
 
     async def _delegate_to_script(
         self,

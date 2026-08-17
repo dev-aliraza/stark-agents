@@ -17,12 +17,20 @@ see, read or click the user's — which is enforced in the extension, not here.
 """
 
 from .bridge import BridgeError, Browser, BrowserBridge, acquire, release
-from .tools import BROWSER_TOOL_NAMES, BrowserTools, schemas
+from .tools import (
+    BROWSER_TOOL_NAMES,
+    VISION_TOOL_NAMES,
+    BrowserTools,
+    schemas,
+    vision_schemas,
+)
 
 __all__ = [
     "BrowserTools",
     "BROWSER_TOOL_NAMES",
+    "VISION_TOOL_NAMES",
     "schemas",
+    "vision_schemas",
     "BrowserBridge",
     "BridgeError",
     "Browser",

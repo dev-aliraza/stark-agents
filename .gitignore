@@ -209,3 +209,5 @@ __marimo__/
 # local py files
 *.local.py
 skills/*
+# Screenshots the vision-agent example saves (screenshot_path).
+examples/agents/*/screenshots/

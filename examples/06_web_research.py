@@ -37,6 +37,7 @@ stark.run(
     exclude_agents=[
         "draft-agent",
         "browser-agent",
+        "vision-agent",
         "sales-agent",
         "inventory-agent",
         "writer-agent",
