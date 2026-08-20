@@ -26,6 +26,7 @@ agents are relevant — in parallel when the sub-tasks are independent.
 - 🌐 **Native tools** — a `tools:` block gives an agent a shell, web search, or the user's own Chrome; `file` is global. In-process, so settings are settings, not environment smuggled through a subprocess.
 - 👁️ **Vision, on any provider** — an agent can look at a page, not just read it. Images go out in one format LiteLLM translates for Anthropic, OpenAI and Gemini alike; a model that cannot see is never offered the tools.
 - 🧱 **Per-agent budgets** — each agent carries its own model, effort, iteration cap, and token cap.
+- 🔁 **Transient failures are retried** — a rate limit or a provider blip is retried five times with jittered exponential backoff; a bad request fails immediately rather than five times over.
 
 ## Installation
 
@@ -138,6 +139,36 @@ def run(
 
 `run()` blocks until interrupted. To embed it in an existing event loop, use
 `await stark.run_async(...)` — same arguments.
+
+## When a model call fails
+
+A single rate limit used to end a whole agent run, and an agent that takes a hundred turns will
+meet one. So `LLMClient.complete` retries — once for the agent loop and the orchestrator alike,
+since both go through it.
+
+| | |
+| --- | --- |
+| Retried | rate limits, timeouts, connection failures, and anything the provider blames on itself (5xx, 408, 409, 429) |
+| Not retried | authentication, malformed requests, context-length, content policy — anything where the request *is* the problem |
+| Attempts | 6 (the first, plus `MAX_RETRIES = 5`) |
+| Backoff | roughly 1, 2, 4, 8, 16 seconds, jittered between half and full, capped at 30 |
+
+Two decisions worth knowing:
+
+**A `Retry-After` from the provider wins.** It knows when its limit resets and we are guessing —
+capped, so a mistaken or hostile header cannot park a run for an hour.
+
+**The jitter is not decoration.** Agents fan out in parallel, so one shared rate limit hits
+several at the same instant; un-jittered backoff would march them all back in step and hit it
+again together.
+
+**Not everything is retried, on purpose.** Sending a malformed request six times costs six
+times as much, takes half a minute, and ends at the same error — with the one message that
+explains it buried under five retry warnings. A permanent failure is raised at once.
+
+And a stream that fails **after** part of the answer has reached you is reported rather than
+retried: replaying it would print the beginning twice, which reads as the model repeating
+itself. A visible error is better than silently duplicated output.
 
 ## Two agent types
 
@@ -499,6 +530,8 @@ itself with JavaScript, or one that has to be *filled in* rather than read.
 | `browser_click_at` | *(vision)* Click a point on the last screenshot. |
 | `browser_type` | *(vision)* Type into whatever that click focused. |
 | `browser_drag` | *(vision)* Drag between two points on the last screenshot. |
+| `browser_click_text` | *(vision)* Click the element with this text — exact, nothing estimated. |
+| `browser_find` | *(vision)* Where the things with this text are, and their coordinates. |
 
 | Setting | Meaning |
 | --- | --- |
@@ -617,6 +650,24 @@ looking and clicking gets an error rather than a click on something the model ne
 discipline as ref staleness — and it matters more here, because a stale coordinate still
 points at *something*.
 
+#### Accuracy: click by name, not by guessed pixel
+
+`browser_click_text("Insert column left")` locates that element on the live page and clicks its
+centre. There is no coordinate to estimate and nothing to go stale, so it either hits the right
+thing or reports that it could not find it — and it refuses rather than guessing when several
+things share the label.
+
+This is the difference between working and dangerous. `Insert column left` and `Delete column`
+sit a few pixels apart in the same Google Docs menu; a run that estimated between them deleted a
+column of real data. Anything with words on it — menu items, buttons, tabs, toolbar controls —
+should be clicked by its words. `browser_find` does the same lookup without clicking, for
+reading a menu before committing to it.
+
+Coordinates stay for what has no element behind it: canvas content, charts, drawing surfaces.
+There, `browser_screenshot` with `grid: true` overlays a labelled 0-1000 grid so the coordinate
+is read off gridlines rather than judged by eye, and `browser_click_at` returns `clicked` — the
+label of whatever was actually under the point — so a miss is visible immediately.
+
 #### Narrowing it down
 
 `exclude:` matters more here than for other toolsets. An agent that works from screenshots and
@@ -694,9 +745,15 @@ still see that a screenshot happened there.
 
 #### What it refuses
 
-`browser_fill` will not type into a password or other credential-shaped field. Neither will
-`browser_type`, which is checked against the focused element — otherwise clicking a password
-box and typing would walk straight around the first refusal. Those are the
+`browser_fill` and `browser_type` refuse a password or other credential-shaped field — checked
+against the focused element, so clicking the box first does not get round it, and including the
+standard `autocomplete` tokens (`one-time-code`, `cc-number`, `cc-csc`).
+
+Two gaps worth knowing rather than assuming away: `browser_press` has no such check, so a
+determined agent can type a secret one character at a time; and a field inside an iframe cannot
+be inspected from the parent document, so typing into a focused frame is allowed and says
+`nested: true` to record that the check did not run. Read it as "will not fill credentials by
+accident", not "cannot be made to". Those are the
 user's to type. `browser_open` takes http(s) only.
 
 **Page content is untrusted input, and this toolset can act on it.** That is a genuinely
@@ -932,6 +989,33 @@ Provider credentials themselves follow LiteLLM's conventions — `ANTHROPIC_API_
 ## Listeners
 
 ### CLI
+
+Progress lines show **what a sub-agent is doing**, not just which tool it reached for: the
+salient arguments on the way in, the outcome on the way back, and the agent's own words in
+between.
+
+```
+  → vision-agent: add a 16/08 column and fill the dropdowns
+    » vision-agent: Checklist:
+      1. Open the doc
+      2. Add the column
+    · vision-agent → browser_click_text "Insert column left"
+    ✓ clicked=Insert column left matched=exact
+    · vision-agent → browser_scroll amount=600
+    ✓ scrolled=600 atEnd=False
+    ✗ [error] nothing on screen has the text 'Frobnicate'
+  ✓ vision-agent finished
+```
+
+`»` is the agent talking — its instructions tell it to name the checklist item it is on, and
+that is the most useful progress there is. A call that finished with nothing to add prints one
+line rather than two, `tabId` is dropped as noise, values are truncated, and anything that looks
+like a token is redacted.
+
+**This is terminal-only.** It arrives through `ResponseSink.detail`, an optional hook whose
+default does nothing, so Slack keeps one tidy line per step and a custom sink is unaffected
+until it chooses to override. `event` still carries the plain `agent → tool_name` it always
+did; the narration is additional, not a replacement.
 
 ```bash
 stark --agents ./agents

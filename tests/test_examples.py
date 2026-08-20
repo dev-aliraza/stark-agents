@@ -510,12 +510,13 @@ async def test_the_example_vision_agent_attaches_the_debugger_eagerly():
     assert "attach_debugger" not in other.settings
 
 
-async def test_the_example_vision_agent_is_given_only_the_visual_tools():
-    """Its whole premise is the picture.
+async def test_the_example_vision_agent_can_click_by_name_not_only_by_pixel():
+    """Accuracy comes from not estimating coordinates.
 
-    Leaving the DOM-reading tools in gives it a second, contradictory way to work, and on a
-    canvas app they return a toolbar and nothing else — which reads as "keep looking" and is
-    how a five-step task becomes thirty.
+    `browser_text` stays withheld — on a canvas app it returns nothing useful and reads as
+    "keep looking". But the menus, toolbars and dialogs of a canvas app *are* real elements,
+    and clicking those by name rather than by guessed pixel is the whole difference between
+    hitting `Insert column left` and hitting `Delete column`.
     """
     registry = await Registry.create(AGENTS, exclude_agents=["draft-agent", "web-agent"])
     try:
@@ -526,9 +527,13 @@ async def test_the_example_vision_agent_is_given_only_the_visual_tools():
             ).schemas()
         }
 
+        # The accurate path: locate by text, click the live element.
+        assert {"browser_click_text", "browser_find"} <= names
         assert {"browser_screenshot", "browser_click_at", "browser_type"} <= names
-        # No second way to work, and no files to wander into.
-        assert not (names & {"browser_text", "browser_elements", "browser_click", "browser_fill"})
+        # Elements and ref-clicks are back, for the furniture.
+        assert {"browser_elements", "browser_click"} <= names
+        # Reading a canvas as text never helped, and no files to wander into.
+        assert "browser_text" not in names
         assert not {name for name in names if name.startswith("file_")}
     finally:
         await registry.aclose()
@@ -574,6 +579,24 @@ async def test_the_example_vision_agent_saves_inside_its_own_folder():
     assert Path(agent.path) in tools.screenshot_path.parents
 
 
+def visual_example_brief() -> str:
+    """The orchestrator brief from example 08, as the model actually receives it.
+
+    Parsed rather than grepped: the source wraps it across adjacent string literals, so a
+    phrase that reads as one sentence is not contiguous in the file. Python folds those into a
+    single constant, so `ast` gives back the real string.
+    """
+    import ast
+
+    tree = ast.parse((EXAMPLES / "08_visual_browsing.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if keyword.arg == "instructions":
+                    return ast.literal_eval(keyword.value).lower()
+    raise AssertionError("example 08 has no instructions= argument")
+
+
 def test_the_visual_example_forbids_reconnaissance_delegations():
     """The failure that kept looking like a scrolling bug.
 
@@ -583,8 +606,7 @@ def test_the_visual_example_forbids_reconnaissance_delegations():
     and the agent spends its whole budget surveying. Guarded here because it recurred across
     several runs and is invisible in any other test.
     """
-    source = (EXAMPLES / "08_visual_browsing.py").read_text(encoding="utf-8")
-    instructions = source.split("instructions=(")[1].split("),")[0].lower()
+    instructions = visual_example_brief()
 
     assert "never delegate a reconnaissance step" in instructions
     for forbidden in ("describe", "survey", "do not change"):
@@ -597,7 +619,7 @@ def test_the_vision_agent_bounds_a_reporting_task_to_one_screenshot():
     agents = {agent.name: agent for agent in discover_agents(AGENTS)}
     body = agents["vision-agent"].instructions.lower()
 
-    assert "screenshot, then act" in body
+    assert "never reconnoitre" in body
     # It must not simply refuse a reporting task — it answers from one screen and stops.
     assert "one** screenshot" in body or "one screenshot" in body
 
@@ -612,7 +634,7 @@ def test_the_vision_agent_loop_continues_by_scrolling():
     agents = {agent.name: agent for agent in discover_agents(AGENTS)}
     body = agents["vision-agent"].instructions
 
-    assert "Not finished? Scroll" in body
+    assert "Scroll, and go back to 1" in body
     assert "atEnd" in body, "the loop needs a completion signal, not a guess"
 
 
@@ -624,7 +646,7 @@ def test_the_vision_agent_bulk_check_never_halts():
     """
     body = {a.name: a for a in discover_agents(AGENTS)}["vision-agent"].instructions
     assert "carry on one at a time" in body
-    assert "never stop" in body
+    assert "Never stall" in body
 
 
 def test_the_vision_agent_uses_the_portable_shortcut_modifier():
@@ -641,3 +663,41 @@ def test_the_vision_agent_uses_the_portable_shortcut_modifier():
         assert "macOS" in context or "Mac" in context, (
             f"instruction still tells it to press ctrl: {line}"
         )
+
+
+def test_the_visual_example_delegates_the_whole_request_at_once():
+    """One delegation, not one per step.
+
+    Every delegation is a fresh `AgentRunner.run`, so the agent keeps nothing between them —
+    a second delegation cannot reach the tab the first one opened and starts by opening
+    another. Splitting also leaves the agent with a one-item checklist, which defeats the
+    thing that keeps it on track. Observed: a four-step request became four tabs.
+    """
+    instructions = visual_example_brief()
+
+    assert "in one delegation" in instructions
+    assert "fresh conversation" in instructions, "the brief must say why splitting breaks it"
+    # The old instruction that caused it must not come back.
+    assert "one at a time" not in instructions
+
+
+def test_the_vision_agent_reuses_its_tab_across_the_checklist():
+    body = {a.name: a for a in discover_agents(AGENTS)}["vision-agent"].instructions
+
+    assert "One tab, for the whole checklist" in body
+    assert "browser_tabs" in body, "it needs a way to find the tab it already has"
+
+
+def test_the_vision_agent_column_recipe_re_screenshots_before_the_shift_click():
+    """The step that gets skipped.
+
+    Scrolling to the end of a column invalidates the coordinate frame, so a shift-click using
+    pre-scroll coordinates is refused — and taking that refusal as "range selection does not
+    work" is what sends it back to one cell at a time.
+    """
+    body = {a.name: a for a in discover_agents(AGENTS)}["vision-agent"].instructions
+    recipe = body.split("Selecting a whole column")[1].split("##")[0]
+
+    assert "screenshot" in recipe.lower()
+    assert 'modifiers: ["shift"]' in recipe
+    assert "atEnd" in recipe, "it needs to know when it has reached the last row"

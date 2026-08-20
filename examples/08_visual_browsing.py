@@ -46,6 +46,15 @@ the agent is being obedient, not stupid. So the orchestrator here is told explic
 invent a discovery step, and `vision-agent` in turn bounds any reporting task to a single
 screenshot.
 
+## One delegation, not one per step
+
+Hand `vision-agent` the whole request. **Every delegation is a fresh conversation** — the agent
+keeps nothing from the last one, so a second delegation cannot reach the tab the first one
+opened, and it starts by opening another. Split a four-step request into four delegations and
+you get four tabs and four one-item checklists.
+
+The agent owns the checklist. That is the point of it having one.
+
 ## Give it one finishable thing
 
 The failure mode worth knowing about: this agent works from pictures, so an open-ended task
@@ -54,9 +63,10 @@ finished — and it keeps screenshotting. The fix is in what you ask for. `add a
 "Reviewed by Ali" at the end of this doc` finishes; `read this doc` does not.
 
 Its instructions push hard the same way — do the task, do not survey the page, a loop is a
-failure rather than persistence — and its toolset is cut down to the nine tools that make
-sense from a screenshot. `browser_text` and `browser_elements` are deliberately withheld: on a
-canvas app they return a toolbar and nothing else, which reads as "keep looking".
+failure rather than persistence. Only `browser_text` is withheld, because reading a canvas as
+text returns nothing useful and reads as "keep looking". `browser_elements` and `browser_click`
+are kept: the menus, toolbars and dialogs of a canvas app *are* real elements, and clicking
+those by name rather than by guessed pixel is where accuracy comes from.
 
 ## You can watch it work
 
@@ -146,10 +156,15 @@ stark.run(
         "this goes wrong.\n\n"
         "Delegate a *reporting* task only when the user themselves asked a question about "
         "the page. Never as a preliminary to doing work.\n\n"
-        "The user's steps are already concrete. Pass each one through as the action it is, "
-        "in the user's own words, and let vision-agent find what it needs on the page. "
-        "Never add a step the user did not ask for. If the request has several steps, "
-        "delegate them one at a time and check each came back before sending the next.\n\n"
+        "**Delegate the whole request in one go, and let vision-agent run it.** Pass the "
+        "user's steps through verbatim — all of them, in one delegation, in the user's own "
+        "words. Do not split a multi-step request into one delegation per step, and do not "
+        "add a step the user did not ask for.\n\n"
+        "The reason is not tidiness. Each delegation is a fresh conversation for the agent: "
+        "it keeps nothing from the last one, so a second delegation cannot reach the browser "
+        "tab the first one opened and has to open another. Splitting the work also takes the "
+        "checklist away from the agent, which is the thing that keeps it on track. Hand it "
+        "the list; it owns the list.\n\n"
         "Report what it found. Never press a button that commits something: if it reports a "
         "filled-in form or a pending action, show the user what it saw and let them confirm."
     ),

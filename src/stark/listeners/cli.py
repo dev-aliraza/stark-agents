@@ -202,6 +202,9 @@ class CLISink(ResponseSink):
         self.show_events = show_events
         self.color = _supports_color()
         self._started = False
+        # The call line printed for each in-flight tool, so a result that adds nothing can be
+        # recognised and skipped rather than printed twice.
+        self._last_tool: dict[str | None, str] = {}
 
     def _dim(self, text: str) -> str:
         return f"{_DIM}{text}{_RESET}" if self.color else text
@@ -221,16 +224,44 @@ class CLISink(ResponseSink):
         self._write(text)
 
     async def event(self, kind: str, detail: str, key: str | None = None) -> None:
-        if not self.show_events:
+        """Agent-level progress. Tool lines come through `detail` instead, so they are not
+        rendered twice — see `ResponseSink.detail`."""
+        if not self.show_events or not detail.strip():
             return
-        marker = {
-            "agent_start": "→",
-            "agent_end": "✓",
-            "agent_error": "✗",
-            "tool": "·",
-            "tool_end": "✓",
-        }.get(kind, "·")
-        self._write(self._dim(f"  {marker} {detail}"), newline=True)
+        if kind in {"tool", "tool_end"}:
+            return
+
+        marker = {"agent_start": "→", "agent_end": "✓", "agent_error": "✗"}.get(kind, "·")
+        self._write(self._dim(f"  {marker} {self._wrap(detail, '  ')}"), newline=True)
+
+    async def detail(self, kind: str, text: str, key: str | None = None) -> None:
+        """The verbose narration: what a tool was given, and what came back.
+
+        Terminal-only on purpose. Slack leaves this unimplemented, so a chat channel keeps one
+        tidy line per step instead of a running commentary.
+        """
+        if not self.show_events or not text.strip():
+            return
+
+        if kind == "tool":
+            self._last_tool[key] = text
+        elif kind == "tool_end":
+            called = self._last_tool.pop(key, "")
+            # The call is on the line directly above, so print only the outcome — repeating a
+            # long call line to append eight characters of result is unreadable.
+            if text == called:
+                return
+
+        marker = "✗" if text.startswith("[error]") else {"tool": "·"}.get(kind, "✓")
+        if kind == "agent_say":
+            marker = "»"
+
+        # A step further in than agent-level lines, so a delegated run reads as nested.
+        self._write(self._dim(f"    {marker} {self._wrap(text, '    ')}"), newline=True)
+
+    def _wrap(self, text: str, indent: str) -> str:
+        """Keep continuation lines in the same column, or a checklist falls out of it."""
+        return f"\n{indent}  ".join(text.strip().splitlines())
 
     async def message(self, text: str) -> None:
         """Print a script agent's output as its own labelled block."""

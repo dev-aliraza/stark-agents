@@ -278,6 +278,9 @@ async def test_the_agent_loop_attaches_images_after_the_tool_result():
         async def event(self, *args, **kwargs):
             return None
 
+        async def detail(self, *args, **kwargs):
+            return None
+
     runner = AgentRunner(AgentConfig(name="a", description="d", instructions="", path="."), toolbox(vision=True))
     messages = await runner._run_tools(
         [ToolCall(id="c1", name="look", arguments="{}")], Sink(), "key"
@@ -294,6 +297,9 @@ async def test_a_text_only_turn_appends_no_user_message():
 
     class Sink:
         async def event(self, *args, **kwargs):
+            return None
+
+        async def detail(self, *args, **kwargs):
             return None
 
     runner = AgentRunner(AgentConfig(name="a", description="d", instructions="", path="."), toolbox(vision=True))
@@ -367,3 +373,62 @@ def test_read_only_file_access_omits_the_script_advice():
 def test_the_reporting_section_is_always_present():
     """It is about the delegation contract, not about tools, so it never depends on them."""
     assert "## Reporting back" in runner_with([])._system_prompt()
+
+
+# --- the turn sequence each provider actually receives --------------------------------------
+
+
+def screenshot_exchange():
+    """One tool call that produced an image, as the agent loop builds it."""
+    return [
+        {"role": "user", "content": "do it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "t1",
+                    "type": "function",
+                    "function": {"name": "browser_screenshot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "content": "{}"},
+        image_message([shot("Screenshot:")]),
+    ]
+
+
+def test_anthropic_merges_the_image_into_the_tool_result_turn():
+    litellm = pytest.importorskip("litellm")
+
+    translated = litellm.AnthropicConfig().transform_request(
+        model="claude-opus-5",
+        messages=screenshot_exchange(),
+        optional_params={},
+        litellm_params={},
+        headers={},
+    )
+    roles = [message["role"] for message in translated["messages"]]
+    assert roles == ["user", "assistant", "user"], "the image should share the tool-result turn"
+
+
+def test_gemini_keeps_the_image_in_a_turn_of_its_own():
+    """Documented, not asserted to be ideal.
+
+    LiteLLM merges the tool result and the image for Anthropic but not for Gemini, where they
+    arrive as two consecutive user turns. The function_response still immediately follows the
+    function_call, which is the ordering rule Gemini actually enforces — so this is legal, but
+    it is a real per-provider difference and worth catching if it ever changes.
+    """
+    pytest.importorskip("litellm")
+    from litellm.llms.vertex_ai.gemini.transformation import (
+        _gemini_convert_messages_with_history,
+    )
+
+    turns = _gemini_convert_messages_with_history(messages=screenshot_exchange())
+    roles = [turn["role"] for turn in turns]
+
+    assert roles == ["user", "model", "user", "user"]
+    # The image is native, and the response still sits directly after the call that made it.
+    assert list(turns[2]["parts"][0]) == ["function_response"]
+    assert [key for part in turns[3]["parts"] for key in part] == ["text", "inline_data"]

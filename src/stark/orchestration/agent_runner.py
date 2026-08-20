@@ -9,6 +9,7 @@ from ..logger import get_logger
 from ..types import AgentConfig, AgentResult, ToolCall, ToolImage
 from ..vision import image_message, prune_images
 from .registry import ToolBox
+from .narrate import describe_call, describe_result
 from .tool_output import split_result
 
 logger = get_logger("agent")
@@ -120,6 +121,14 @@ class AgentRunner:
             result.cost += completion.cost
             messages.append(completion.as_message())
 
+            # What the agent says while still working is the most useful progress there is:
+            # its instructions tell it to name the checklist item it is on, and without this
+            # that never reaches anyone. Only the final message goes to the orchestrator.
+            if completion.tool_calls and completion.content.strip():
+                await sink.detail(
+                    "agent_say", f"{self.config.name}: {completion.content.strip()}", key=key
+                )
+
             if not completion.tool_calls:
                 result.output = completion.content.strip()
                 await sink.event("agent_end", f"{self.config.name} finished", key=key)
@@ -157,16 +166,23 @@ class AgentRunner:
             # Namespaced by the agent so two agents running the same tool concurrently
             # never share a key.
             tool_key = f"{agent_key}:{call.id}"
+            arguments = call.parsed_arguments()
             label = f"{self.config.name} → {call.name}"
             await sink.event("tool", label, key=tool_key)
+            await sink.detail(
+                "tool", f"{self.config.name} → {describe_call(call.name, arguments)}", key=tool_key
+            )
             try:
-                result = await self.toolbox.call(call.name, call.parsed_arguments())
+                result = await self.toolbox.call(call.name, arguments)
             except Exception as exc:
                 logger.error("Agent '%s' tool '%s' failed: %s", self.config.name, call.name, exc)
                 result = f"[error] {call.name} failed: {exc}"
-            await sink.event("tool_end", label, key=tool_key)
 
             text, images = split_result(result)
+            # The outcome, when there is one worth reading. Blank means "nothing to add beyond
+            # the fact that it finished", and sinks are expected to stay quiet for that.
+            await sink.event("tool_end", label, key=tool_key)
+            await sink.detail("tool_end", describe_result(text), key=tool_key)
             return {"role": "tool", "tool_call_id": call.id, "content": text}, images
 
         outcomes = await asyncio.gather(*(execute(call) for call in calls))

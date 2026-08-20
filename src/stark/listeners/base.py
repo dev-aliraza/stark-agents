@@ -68,6 +68,23 @@ class ResponseSink(ABC):
         in one turn — so matching on `detail` is not reliable.
         """
 
+    async def detail(self, kind: str, text: str, key: str | None = None) -> None:
+        """Verbose narration, for a sink that wants it. Ignored by default.
+
+        `event` reports *that* a tool ran; this reports what it was given and what came back —
+        `browser_click_text "Insert column left"`, then `clicked=Insert column left`. It also
+        carries an agent's own words between tool calls, under the kind `agent_say`.
+
+        Separate from `event` because it suits a terminal and not a chat channel: the CLI wants
+        every argument and outcome as it happens, while Slack wants one tidy line per step that
+        does not grow. The default does nothing, so a sink opts in by overriding it and no
+        existing sink changes behaviour.
+
+        A sink that does implement this should render tool progress **from here rather than
+        from `event`** — the two are emitted as a pair, and rendering both prints every call
+        twice.
+        """
+
     @abstractmethod
     async def final(self, text: str) -> None:
         """Deliver the completed answer, and close out any progress display.

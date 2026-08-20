@@ -20,6 +20,7 @@ from .agent_runner import AgentRunner
 from .registry import Registry
 from .script_phase import stop_requested
 from .script_runner import build_payload
+from .narrate import describe_call, describe_result
 from .tool_output import split_result
 
 logger = get_logger("orchestrator")
@@ -215,15 +216,22 @@ class Orchestrator:
         self, call: ToolCall, sink: ResponseSink
     ) -> tuple[str, list[ToolImage]]:
         """Run one of the orchestrator's own tools, reporting it as a step like any other."""
+        arguments = call.parsed_arguments()
         label = f"orchestrator → {call.name}"
         await sink.event("tool", label, key=call.id)
+        await sink.detail(
+            "tool", f"orchestrator → {describe_call(call.name, arguments)}", key=call.id
+        )
         try:
-            result = await self.toolbox.call(call.name, call.parsed_arguments())
+            result = await self.toolbox.call(call.name, arguments)
         except Exception as exc:
             logger.error("Orchestrator tool '%s' failed: %s", call.name, exc)
             result = f"[error] {call.name} failed: {exc}"
+
+        text, images = split_result(result)
         await sink.event("tool_end", label, key=call.id)
-        return split_result(result)
+        await sink.detail("tool_end", describe_result(text), key=call.id)
+        return text, images
 
     async def _delegate(
         self,

@@ -38,6 +38,16 @@ from .bridge import (
 
 logger = get_logger("browser")
 
+# The one coordinate space, for every model: 0-1000 across the width and 0-1000 down the
+# height, whatever the image's pixel size.
+#
+# Models do not agree on what a coordinate means. Claude answers in the pixels of the image it
+# saw; Gemini is trained to answer on a normalised 0-1000 grid regardless of the image. Adopting
+# one family's convention leaves the other clicking somewhere plausible but wrong — off to one
+# side, compressed towards a corner — and nothing about that looks like an error, so it never
+# corrects itself. Declaring the space instead of inferring it removes the whole class of bug.
+COORD_SPACE = 1000
+
 OPEN = "browser_open"
 TEXT = "browser_text"
 ELEMENTS = "browser_elements"
@@ -54,8 +64,10 @@ SCREENSHOT = "browser_screenshot"
 CLICK_AT = "browser_click_at"
 TYPE = "browser_type"
 DRAG = "browser_drag"
+FIND = "browser_find"
+CLICK_TEXT = "browser_click_text"
 
-VISION_TOOL_NAMES = (SCREENSHOT, CLICK_AT, TYPE, DRAG)
+VISION_TOOL_NAMES = (SCREENSHOT, CLICK_AT, TYPE, DRAG, FIND, CLICK_TEXT)
 BROWSER_TOOL_NAMES = (
     OPEN, TEXT, ELEMENTS, CLICK, FILL, PRESS, SCROLL, NAVIGATE, TABS, CLOSE,
     *VISION_TOOL_NAMES,
@@ -77,7 +89,23 @@ _ROUTES = {
     CLICK_AT: "click_at",
     TYPE: "type_text",
     DRAG: "drag",
+    FIND: "find",
+    CLICK_TEXT: "click_text",
 }
+
+
+def _property(kind: str, text: str) -> dict[str, Any]:
+    """One parameter, declared so every provider can validate it.
+
+    An `array` **must** say what it contains. Anthropic and OpenAI accept one that does not;
+    Gemini refuses the whole function declaration, and LiteLLM papers over it by guessing
+    `items: {"type": "object"}` — which is wrong for a list of strings, so the model then sends
+    `[{}]` and the call is rejected on arrival. Every array here holds strings.
+    """
+    declared: dict[str, Any] = {"type": kind, "description": text}
+    if kind == "array":
+        declared["items"] = {"type": "string"}
+    return declared
 
 
 def _tool(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:
@@ -89,8 +117,7 @@ def _tool(name: str, description: str, properties: dict, required: list[str] | N
             "parameters": {
                 "type": "object",
                 "properties": {
-                    key: {"type": kind, "description": text}
-                    for key, (kind, text) in properties.items()
+                    key: _property(kind, text) for key, (kind, text) in properties.items()
                 },
                 **({"required": required} if required else {}),
             },
@@ -114,14 +141,22 @@ def vision_schemas() -> list[dict[str, Any]]:
             "see in the next message. Use this when the page has nothing worth reading in "
             "browser_elements — a canvas app, a chart, a custom widget — or to check what "
             "actually happened after an action. For ordinary pages browser_elements and "
-            "browser_text are cheaper and more precise.",
-            {"tabId": _TAB},
+            "browser_text are cheaper and more precise. "
+            "Pass grid=true to draw a labelled 0-1000 grid over the page: read the coordinate "
+            "off the gridlines rather than judging it by eye, which is worth doing before any "
+            "click you are not confident about.",
+            {
+                "tabId": _TAB,
+                "grid": ("boolean", "Overlay a labelled coordinate grid. Off by default."),
+            },
             required=["tabId"],
         ),
         _tool(
             CLICK_AT,
-            "Click a point on the most recent screenshot of this tab, in that image's pixel "
-            "coordinates. Take a screenshot first, and again after scrolling. "
+            "Click a point on the most recent screenshot of this tab. Coordinates are "
+            "0-1000 across the width and 0-1000 down the height — NOT pixels: (0, 0) is the "
+            "top-left corner, (500, 500) the middle, (1000, 1000) the bottom-right, whatever "
+            "size the image is. Take a screenshot first, and again after scrolling. "
             "Use button='right' to open a context menu — in an app like Google Docs that is "
             "how you duplicate a tab, insert a table column, or delete a row. Use clicks=2 to "
             "select a word or enter a cell, clicks=3 to select a whole line or paragraph. "
@@ -131,8 +166,8 @@ def vision_schemas() -> list[dict[str, Any]]:
             "instead of visiting each.",
             {
                 "tabId": _TAB,
-                "x": ("integer", "Pixels from the left edge of the screenshot."),
-                "y": ("integer", "Pixels from the top edge of the screenshot."),
+                "x": ("integer", "0-1000 from the left edge. 500 is the middle."),
+                "y": ("integer", "0-1000 from the top edge. 500 is the middle."),
                 "button": ("string", "'left' (default) or 'right' for a context menu."),
                 "clicks": ("integer", "1 (default), 2 to double-click, 3 to triple-click."),
                 "modifiers": (
@@ -146,13 +181,14 @@ def vision_schemas() -> list[dict[str, Any]]:
         _tool(
             DRAG,
             "Drag from one point to another on the last screenshot — to reorder something, "
-            "move a tab, or select a range by sweeping across it.",
+            "move a tab, or select a range by sweeping across it. Coordinates are 0-1000 on "
+            "each axis, as for browser_click_at.",
             {
                 "tabId": _TAB,
-                "from_x": ("integer", "Start, pixels from the left of the screenshot."),
-                "from_y": ("integer", "Start, pixels from the top of the screenshot."),
-                "to_x": ("integer", "End, pixels from the left."),
-                "to_y": ("integer", "End, pixels from the top."),
+                "from_x": ("integer", "Start, 0-1000 from the left edge."),
+                "from_y": ("integer", "Start, 0-1000 from the top edge."),
+                "to_x": ("integer", "End, 0-1000 from the left edge."),
+                "to_y": ("integer", "End, 0-1000 from the top edge."),
             },
             required=["tabId", "from_x", "from_y", "to_x", "to_y"],
         ),
@@ -162,6 +198,38 @@ def vision_schemas() -> list[dict[str, Any]]:
             "browser_click_at first. Refuses password and other credential fields, the same "
             "as browser_fill.",
             {"tabId": _TAB, "text": ("string", "The text to type.")},
+            required=["tabId", "text"],
+        ),
+        _tool(
+            CLICK_TEXT,
+            "Click the thing on screen with this text — a menu item, a button, a tab, a "
+            "toolbar control. **Always prefer this over browser_click_at when the target has "
+            "words on it.** It finds the element on the live page and clicks its centre, so "
+            "there is no coordinate to estimate and nothing to go stale: it either hits the "
+            "right thing or tells you it could not find it. Estimating a coordinate for "
+            "'Insert column left' when 'Delete column' is 24 pixels below it is how documents "
+            "get damaged. Refuses rather than guessing when several things share the text.",
+            {
+                "tabId": _TAB,
+                "text": ("string", "The visible text, e.g. 'Insert column left'."),
+                "button": ("string", "'left' (default) or 'right'."),
+                "clicks": ("integer", "1 (default), 2 to double-click, 3 to triple-click."),
+                "modifiers": ("array", "Held while clicking: 'shift', 'mod', 'alt'."),
+            },
+            required=["tabId", "text"],
+        ),
+        _tool(
+            FIND,
+            "Find where things with this text are, without clicking. Returns each match with "
+            "its label and its coordinates in the usual 0-1000 space. Use it to check "
+            "something exists, to read a menu before committing to an item, or to get exact "
+            "coordinates instead of estimating them. Only sees real elements — content drawn "
+            "on a canvas is invisible to it, and that is what screenshots are for.",
+            {
+                "tabId": _TAB,
+                "text": ("string", "The text to look for. Partial matches count."),
+                "limit": ("integer", "Maximum matches to return. Default 10."),
+            },
             required=["tabId", "text"],
         ),
     ]
@@ -427,18 +495,61 @@ class BrowserTools:
         return self._bridge
 
 
+def _coordinate(arguments: dict[str, Any], axis: str) -> int:
+    """One coordinate, checked against the declared space before it costs a round trip.
+
+    A model using the wrong convention sends pixel values, which on any normal viewport
+    overshoot 1000 — so refusing here turns a silent mis-click into an error that names the
+    space and can be corrected on the next turn.
+    """
+    try:
+        value = int(round(float(arguments[axis])))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(
+            f"'{axis}' is required and must be a number between 0 and {COORD_SPACE}"
+        ) from None
+
+    if not 0 <= value <= COORD_SPACE:
+        raise ValueError(
+            f"'{axis}' is {value}, outside the coordinate space. Coordinates are "
+            f"0-{COORD_SPACE} across the width and 0-{COORD_SPACE} down the height of the "
+            f"screenshot — not pixels. The middle of the image is (500, 500)."
+        )
+    return value
+
+
+def _modifier_names(raw: Any) -> list[str]:
+    """Pull modifier names out of whatever shape a provider chose to send.
+
+    A string, a list of strings, or — when a provider has been told the array holds objects —
+    a list of single-valued dicts like `[{"name": "mod"}]`. Unwrapping those beats refusing
+    them: the intent is unambiguous, and how a provider encodes a list of strings is not
+    something the model chose or can correct.
+    """
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    names: list[str] = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            names.extend(str(value).strip() for value in entry.values() if str(value).strip())
+        elif str(entry).strip():
+            names.append(str(entry).strip())
+    return [name.lower() for name in names]
+
+
 def _modifiers(arguments: dict[str, Any]) -> dict[str, Any]:
     """Validate the modifier list shared by `browser_press` and `browser_click_at`."""
     raw = arguments.get("modifiers") or []
-    if isinstance(raw, str):
-        raw = [raw]
     # "mod" is the platform-independent name for the shortcut key: Command on macOS, Control
     # elsewhere. The extension resolves it, because it is the only layer that knows the OS.
     known = {
         "mod", "cmdorctrl", "primary",
         "ctrl", "control", "meta", "cmd", "command", "alt", "shift",
     }
-    cleaned = [str(entry).strip().lower() for entry in raw if str(entry).strip()]
+    cleaned = _modifier_names(raw)
     unknown = [entry for entry in cleaned if entry not in known]
     if unknown:
         raise ValueError(
@@ -469,11 +580,15 @@ def _screenshot_result(result: dict[str, Any], saved_to: Path | None = None) -> 
         "width": width,
         "height": height,
         **({"savedTo": str(saved_to)} if saved_to else {}),
+        "coordinates": f"0-{COORD_SPACE} on each axis, not pixels",
         "note": (
-            f"The image follows. Click points on it with browser_click_at using these "
-            f"coordinates: (0, 0) is the top left and ({width}, {height}) the bottom right. "
-            f"Only the visible area is shown — scroll and take another to see further down, "
-            f"which also gives you fresh coordinates."
+            f"The image follows. To click a point on it, give browser_click_at coordinates "
+            f"from 0 to {COORD_SPACE} on each axis — **not** pixels, and not the {width}x"
+            f"{height} above. (0, 0) is the top-left corner, (500, 500) the middle, "
+            f"({COORD_SPACE}, {COORD_SPACE}) the bottom-right. Work out roughly how far across "
+            f"and how far down your target sits, as a fraction, and multiply by "
+            f"{COORD_SPACE}. Only the visible area is shown — scroll and take another to see "
+            f"further down, which also gives you a fresh frame."
         ),
     }
     return ToolResult(
@@ -537,13 +652,7 @@ def _params(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         params["url"] = url
     if tool_name == DRAG:
         for axis in ("from_x", "from_y", "to_x", "to_y"):
-            try:
-                params[axis] = int(round(float(arguments[axis])))
-            except (KeyError, TypeError, ValueError):
-                raise ValueError(
-                    f"'{axis}' is required and must be a number, in the pixel coordinates "
-                    f"of the last browser_screenshot"
-                ) from None
+            params[axis] = _coordinate(arguments, axis)
     if tool_name == CLICK_AT:
         params.update(_modifiers(arguments))
         button = str(arguments.get("button") or "left").strip().lower()
@@ -558,13 +667,25 @@ def _params(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 raise ValueError("'clicks' must be 1, 2 or 3") from None
         for axis in ("x", "y"):
-            try:
-                params[axis] = int(round(float(arguments[axis])))
-            except (KeyError, TypeError, ValueError):
-                raise ValueError(
-                    f"'{axis}' is required and must be a number, in the pixel coordinates "
-                    f"of the last browser_screenshot"
-                ) from None
+            params[axis] = _coordinate(arguments, axis)
+    if tool_name in (CLICK_TEXT, FIND):
+        text = str(arguments.get("text") or "").strip()
+        if not text:
+            raise ValueError("'text' is required — the words on the thing you want")
+        params["text"] = text
+        if tool_name == FIND and arguments.get("limit") is not None:
+            params["limit"] = max(1, min(25, _int(arguments.get("limit"), 10)))
+        if tool_name == CLICK_TEXT:
+            params.update(_modifiers(arguments))
+            button = str(arguments.get("button") or "left").strip().lower()
+            if button not in {"left", "right", "middle"}:
+                raise ValueError(f"'button' must be 'left' or 'right', got '{button}'")
+            if button != "left":
+                params["button"] = button
+            if arguments.get("clicks") is not None:
+                params["clicks"] = max(1, min(3, _int(arguments.get("clicks"), 1)))
+    if tool_name == SCREENSHOT and _bool(arguments.get("grid"), False):
+        params["grid"] = True
     if tool_name == TYPE:
         text = str(arguments.get("text") or "")
         if not text:

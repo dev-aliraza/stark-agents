@@ -892,3 +892,136 @@ async def test_click_modifiers_compose_with_button_and_clicks():
     )
     assert params["modifiers"] == ["shift"]
     assert params["button"] == "right" and params["clicks"] == 2
+
+
+# --- schemas every provider can validate --------------------------------------------------
+
+
+def test_every_array_parameter_declares_its_item_type():
+    """An array without `items` is not portable.
+
+    Anthropic and OpenAI accept it; Gemini refuses the whole function declaration, and LiteLLM
+    papers over it by guessing `items: {"type": "object"}`. The model is then told to send
+    objects, sends `[{}]`, and the call is rejected on arrival — which took out every
+    copy/paste/select-all shortcut on Gemini while working fine on Anthropic.
+    """
+    for schema in BrowserTools(None, {"vision": True}).schemas():
+        for name, spec in schema["function"]["parameters"].get("properties", {}).items():
+            if spec.get("type") == "array":
+                where = f"{schema['function']['name']}.{name}"
+                assert "items" in spec, f"{where} is an array with no item type"
+                assert spec["items"] == {"type": "string"}, where
+
+
+def test_the_gemini_declaration_keeps_the_item_type():
+    """Pinned against LiteLLM: it must not overwrite what we declared."""
+    pytest.importorskip("litellm")
+    from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import (
+        VertexGeminiConfig,
+    )
+
+    tools = [
+        s for s in BrowserTools(None, {"vision": True}).schemas()
+        if s["function"]["name"] == "browser_press"
+    ]
+    mapped = VertexGeminiConfig()._map_function(value=tools, optional_params={})
+    modifiers = mapped[0]["function_declarations"][0]["parameters"]["properties"]["modifiers"]
+
+    assert modifiers["items"] == {"type": "string"}
+
+
+@pytest.mark.parametrize(
+    "sent,expected",
+    [
+        (["mod"], ["mod"]),
+        ("mod", ["mod"]),
+        ([{"name": "mod"}], ["mod"]),
+        ([{"value": "shift"}], ["shift"]),
+        ([{"name": "mod"}, {"name": "shift"}], ["mod", "shift"]),
+    ],
+)
+def test_modifiers_are_understood_however_a_provider_wraps_them(sent, expected):
+    """The intent is unambiguous, and the encoding is not the model's choice."""
+    from stark.tools.browser.tools import _params
+
+    params = _params("browser_press", {"tabId": 1, "key": "c", "modifiers": sent})
+    assert params["modifiers"] == expected
+
+
+def test_an_empty_wrapper_is_ignored_rather_than_refused():
+    from stark.tools.browser.tools import _params
+
+    assert "modifiers" not in _params(
+        "browser_press", {"tabId": 1, "key": "c", "modifiers": [{}]}
+    )
+
+
+def test_a_genuinely_unknown_modifier_is_still_refused():
+    """Leniency about wrapping must not become leniency about content."""
+    from stark.tools.browser.tools import _params
+
+    with pytest.raises(ValueError, match="hyper"):
+        _params("browser_press", {"tabId": 1, "key": "c", "modifiers": [{"name": "hyper"}]})
+
+
+# --- clicking by name, not by guessed pixel -----------------------------------------------
+
+
+def test_the_accurate_click_is_offered_alongside_the_coordinate_one():
+    names = {s["function"]["name"] for s in toolset(vision=True).schemas()}
+    assert {"browser_click_text", "browser_find"} <= names
+
+
+async def test_clicking_by_text_reaches_the_extension(bridge):
+    """The accuracy path: locate the live element, click its centre, no estimating."""
+    async with FakeExtension(endpoint(bridge), {"click_text": {}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call(
+                "browser_click_text", {"tabId": 1, "text": "Insert column left"}
+            )
+
+    assert extension.received[0]["command"] == "click_text"
+    assert extension.received[0]["params"]["text"] == "Insert column left"
+
+
+async def test_clicking_by_text_carries_button_and_modifiers(bridge):
+    async with FakeExtension(endpoint(bridge), {"click_text": {}}) as extension:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call(
+                "browser_click_text",
+                {"tabId": 1, "text": "Sheet1", "button": "right", "modifiers": ["shift"]},
+            )
+
+    params = extension.received[0]["params"]
+    assert params["button"] == "right" and params["modifiers"] == ["shift"]
+
+
+async def test_text_is_required_for_both_new_tools():
+    tools = toolset(vision=True)
+    for name in ("browser_click_text", "browser_find"):
+        assert "'text' is required" in await tools.call(name, {"tabId": 1})
+
+
+async def test_find_caps_the_number_of_matches():
+    from stark.tools.browser.tools import _params
+
+    assert _params("browser_find", {"tabId": 1, "text": "x", "limit": 999})["limit"] == 25
+
+
+async def test_the_extensions_refusal_to_guess_reaches_the_model(bridge):
+    """Ambiguity must arrive as a refusal, not as a coin flip."""
+    refusal = "'Copy' matches 2 things on screen, all labelled \"Copy\"."
+    async with FakeExtension(endpoint(bridge), {"click_text": refusal}):
+        async with connected(bridge, vision=True) as tools:
+            result = await tools.call("browser_click_text", {"tabId": 1, "text": "Copy"})
+
+    assert "matches 2 things" in result
+
+
+async def test_the_grid_is_opt_in(bridge):
+    async with FakeExtension(endpoint(bridge), {"screenshot": {"tabId": 1, "image": ""}}) as ext:
+        async with connected(bridge, vision=True) as tools:
+            await tools.call("browser_screenshot", {"tabId": 1})
+            assert "grid" not in ext.received[0]["params"]
+            await tools.call("browser_screenshot", {"tabId": 1, "grid": True})
+            assert ext.received[1]["params"]["grid"] is True
